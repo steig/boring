@@ -32,8 +32,10 @@ templates/
     .dockerignore
     README.md
 docs/
-  index.html            # Marketing/intro page (also published to MinIO at s3.steig.io/public/boring/).
+  index.html            # Marketing/intro page. Push to s3.steig.io/public/boring/ via `scripts/deploy-site.sh`.
   ards/                 # Architectural Decision Records. New material decisions go here.
+scripts/
+  deploy-site.sh        # mc cp docs/index.html → steig/public/boring/index.html (then verify).
 ```
 
 Anything not yet implemented is marked `STUB` in the file header and contains a `die "... not yet implemented"` body plus a `TODO(impl, ARD-NNNN impl-order #X)` comment.
