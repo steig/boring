@@ -30,6 +30,13 @@ compose_generate() {
   local devcontainer_dir="$output_dir/.devcontainer"
   mkdir -p "$devcontainer_dir"
 
+  # Egress: write the resolved allowlist to a file that's bind-mounted into
+  # the container. Compose only references the file if egress.allow is set;
+  # we still create the dir unconditionally so the bind-mount target exists.
+  if egress_enabled "$profile_json"; then
+    egress_write_allowlist_file "$profile_json" "$devcontainer_dir"
+  fi
+
   _compose_emit_yaml "$profile_json" > "$devcontainer_dir/docker-compose.yml"
   _compose_emit_devcontainer "$profile_json" > "$devcontainer_dir/devcontainer.json"
 }
@@ -69,18 +76,37 @@ _compose_emit_yaml() {
     die "compose_generate: profile has neither stack.dockerfile nor stack.base_image (and no theme preset matched)"
   fi
 
-  # Volumes: source bind-mount + each profile mount entry.
+  # Volumes: source bind-mount + each profile mount entry, plus the egress
+  # allowlist file when egress is enabled (host-writes / container-reads, RO).
   # `..` resolves to the repo root because the compose file lives at
   # <repo>/.devcontainer/docker-compose.yml. Don't use `.` here — it would
   # mount only the .devcontainer/ directory.
+  local extra_mounts_json='[]'
+  if egress_enabled "$profile_json"; then
+    # Relative path is fine because the compose file lives at
+    # <repo>/.devcontainer/docker-compose.yml, so ./boring-runtime/... resolves.
+    extra_mounts_json='["./boring-runtime/egress.allow:/etc/boring/egress.allow:ro"]'
+  fi
   local volumes
-  volumes="$(jq -r '
+  volumes="$(jq -r --argjson extra "$extra_mounts_json" '
     ["..:/workspace:cached"] +
     (.mounts | map(
       if .ro then "\(.host):\(.container):ro" else "\(.host):\(.container)" end
-    ))
+    )) +
+    $extra
     | map("      - \"" + . + "\"") | join("\n")
   ' <<<"$profile_json")"
+
+  # Egress enforcement directives (ARD-0011). cap_add + the BORING_EGRESS_MODE
+  # env var are only emitted when egress.allow is non-empty.
+  local cap_add_block="" egress_env=""
+  if egress_enabled "$profile_json"; then
+    cap_add_block="    cap_add:
+      - NET_ADMIN"
+    # Default to enforce; cmd_open's --learn-mode overrides via docker-compose
+    # override file or remoteEnv at devcontainer-up time.
+    egress_env="BORING_EGRESS_MODE"
+  fi
 
   # Ports: "host:container" pairs.
   local ports
@@ -89,7 +115,9 @@ _compose_emit_yaml() {
   ' <<<"$profile_json")"
 
   # Environment: literal values only. Secret URIs are deferred to cmd_open's
-  # remoteEnv injection step.
+  # remoteEnv injection step. Egress mode is injected as a literal pulled from
+  # the host env at compose-up time (`${BORING_EGRESS_MODE:-enforce}`) so
+  # `--learn-mode` flips it without regenerating the compose file.
   local env_block
   env_block="$(jq -r '
     .env | to_entries
@@ -110,13 +138,21 @@ $image_directive
     volumes:
 $volumes
 EOF
+  if [[ -n "$cap_add_block" ]]; then
+    echo "$cap_add_block"
+  fi
   if [[ -n "$ports" ]]; then
     echo "    ports:"
     echo "$ports"
   fi
-  if [[ -n "$env_block" ]]; then
+  if [[ -n "$env_block" || -n "$egress_env" ]]; then
     echo "    environment:"
-    echo "$env_block"
+    [[ -n "$env_block" ]] && echo "$env_block"
+    if [[ -n "$egress_env" ]]; then
+      # Use compose interpolation so --learn-mode (which sets the host env var
+      # before `devcontainer up`) flips the mode without rewriting this file.
+      echo "      BORING_EGRESS_MODE: \"\${BORING_EGRESS_MODE:-enforce}\""
+    fi
   fi
 }
 
@@ -125,6 +161,10 @@ EOF
 # ----------------------------------------------------------------------------
 _compose_emit_devcontainer() {
   local profile_json="$1"
+  # remoteUser:dev tells devcontainer-cli to exec as dev — required because the
+  # image no longer sets USER dev (ARD-0011: install-egress runs as root at
+  # entrypoint, drops via gosu). Without remoteUser, `devcontainer exec` would
+  # default to root.
   jq -n \
     --argjson p "$profile_json" '
     {
@@ -132,6 +172,7 @@ _compose_emit_devcontainer() {
       "dockerComposeFile": "docker-compose.yml",
       "service": "dev",
       "workspaceFolder": "/workspace",
+      "remoteUser": "dev",
       "forwardPorts": $p.forward_ports,
       "shutdownAction": "stopCompose"
     }

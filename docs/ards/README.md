@@ -61,3 +61,4 @@ Write the ARD **at the time of the decision**, not after. A decision without a c
 | [0004](ard-0004-shopify-first-as-dogfood-path.md) | Accepted | Shopify-first as v1 dogfood path; amends ARD-0002 impl order |
 | [0005](ard-0005-security-model-inversion.md) | Accepted | Security model inversion: v1 contains non-engineer + AI from prod; egress allowlist deferred to v1.x |
 | [0006](ard-0006-profile-is-the-trust-anchor.md) | Accepted (mini-ARD) | Profile is the trust anchor — in-container agents cannot modify `.boring/*` |
+| [0011](ard-0011-egress-enforcement-via-iptables.md) | Accepted | Egress enforcement via iptables-in-container + `--learn-mode` |
