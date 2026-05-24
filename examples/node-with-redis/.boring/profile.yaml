@@ -1,0 +1,55 @@
+# Node service + Redis sidecar example.
+#
+# Demonstrates the polyglot-sidecar shape WITHOUT Postgres or Python: a
+# `preset: node` container plus an arbitrary compose sidecar (redis:7) wired
+# via env var. Use this shape for queue workers, session stores, caches, or
+# anything Redis-backed.
+#
+# Copy this file to <your-repo>/.boring/profile.yaml, change the name + image
+# versions to match your project, then run `boring open .`.
+
+profile_version: "1"
+name: node-with-redis-example
+
+# preset: node ships Node 20 + npm + Claude Code + tini. No Python, no
+# Postgres client. For Node + Postgres specifically, use preset: node-postgres
+# (it seeds a Postgres sidecar + DATABASE_URL by default). See ARD-0014.
+preset: node
+# preset_version:
+#   node: "22"   # default is 20; override if your project pins to a different major
+
+# Redis sidecar. No healthcheck declared here, so boring wires the dev
+# service's depends_on.redis.condition to `service_started` (rather than
+# `service_healthy`). Add a healthcheck if you need ordered startup.
+services:
+  - name: redis
+    image: redis:7
+    volumes:
+      - redis-data:/data
+
+# Top-level named volumes referenced by services[].volumes above.
+volumes:
+  - redis-data
+
+# Forwarded host -> container. 3000 is the Node-app default (Express, Next.js,
+# Hono). Adjust to whatever your app actually listens on. Redis itself is
+# reachable from the dev container at the compose-network hostname
+# `redis:6379` and does not need to be forwarded to the host.
+forward_ports: [3000]
+
+env:
+  # Wired to the sidecar above; `redis` is the compose service name.
+  REDIS_URL: "redis://redis:6379"
+
+  # Secret URI example: resolved at container start, never written to disk.
+  # The URI here is the SHAPE — replace "Personal/example-app" with your
+  # actual vault + item names. See README for the other supported schemes.
+  SESSION_SECRET: secret://op://Personal/example-app/session-secret
+
+# First-run setup: install dependencies once the container is up.
+setup:
+  - npm install
+
+# Guardrails: parsed today; codegen ships in v0.3 (ARD-0009). Safe to set now.
+guardrails:
+  forbid_branches: [main, production]

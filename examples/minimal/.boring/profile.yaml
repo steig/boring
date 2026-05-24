@@ -1,0 +1,16 @@
+# The smallest possible boring profile.
+#
+# Declares only the schema version, a name, and a preset. boring fills in
+# everything else from preset defaults: the Ruby + Node + Shopify CLI image,
+# tini as PID 1, the `dev` user, the trust-anchor enforcement, and a single-
+# service compose layout with no sidecars.
+#
+# Copy this file to <your-repo>/.boring/profile.yaml, change `name:` to your
+# repo's slug, then run `boring open .`.
+
+profile_version: "1"
+name: minimal-example
+preset: shopify
+
+# `services:` is required even when empty — use [] to declare "no sidecars."
+services: []

@@ -1,0 +1,87 @@
+# Generic Django + Postgres example profile.
+#
+# Demonstrates the polyglot shape: a curated preset that ships Python + uv +
+# Node, a Postgres sidecar wired via DATABASE_URL, secret URIs resolved at
+# container start, and a first-run setup chain that runs migrations.
+#
+# Copy this file to <your-repo>/.boring/profile.yaml, change the name + secret
+# URIs + image versions to match your project, then run `boring open .`.
+
+profile_version: "1"
+name: django-postgres-example
+
+# preset: django-node ships Python 3.14 (uv-based), Node 20, libpq, and the
+# psql/pg_isready clients. Override versions via preset_version: if your
+# project pins to different ones — see ARD-0014.
+preset: django-node
+# preset_version:
+#   python: "3.13"
+#   node: "20"
+#   postgres: "17"
+
+# Postgres sidecar. boring auto-wires the dev service's depends_on to
+# postgres.condition: service_healthy because we declare a healthcheck.
+# The dev container reaches it at the compose-network hostname `postgres:5432`.
+services:
+  - name: postgres
+    image: postgres:17
+    env:
+      POSTGRES_DB: example_app
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      retries: 10
+
+# Top-level named volumes referenced by services[].volumes above.
+volumes:
+  - postgres-data
+
+# Forwarded host -> container. 8000 for Django; 5173 for Vite if you bundle a
+# frontend. Adjust to whatever your app actually listens on.
+forward_ports: [8000, 5173]
+
+env:
+  # Literal values are inlined into the compose environment block.
+  DJANGO_DEBUG: "True"
+
+  # Wired to the sidecar above. The hostname `postgres` is the compose service
+  # name; the credentials match POSTGRES_PASSWORD on the sidecar.
+  DATABASE_URL: "postgres://postgres:postgres@postgres:5432/example_app"
+
+  # Secret URIs are resolved at container start via `op read` / `security
+  # find-generic-password` / etc., passed to `devcontainer up --remote-env`,
+  # and never written to disk. The URI here is the SHAPE — replace
+  # "Personal/example-app" with your actual vault + item names.
+  #
+  # Other supported URI schemes (see README): keychain:, vault://, aws-sm:,
+  # dbx-vault:, env:, file:.
+  DJANGO_SECRET_KEY: secret://op://Personal/example-app/django-secret-key
+  OPENROUTER_API_KEY: secret://op://Personal/example-app/openrouter-api-key
+
+# First-run setup, run as postCreateCommand once Postgres is healthy. Each
+# entry is a shell command; subshell `cd` does NOT bleed between entries.
+setup:
+  - uv sync --dev
+  - uv run python manage.py migrate
+  - uv run python manage.py loaddata fixtures/seed.json
+  # - (cd frontend && npm install)   # uncomment if you have a JS frontend
+
+# Guardrails: parsed today; codegen ships in v0.3 (ARD-0009). Safe to set now.
+guardrails:
+  forbid_branches: [main, production]
+
+# ---- Restore: pipe prod-shape data into the sidecar (v0.5+, ARD-0012) ----
+#
+# Uncomment when you have a dbx backup of your Postgres available. `transform`
+# is REQUIRED when data_sensitivity: sanitized, because that's the safety
+# contract — data leaving prod must be sanitized at stream time.
+#
+# data_sensitivity: sanitized
+# restore:
+#   - source: dbx://prod/example-app-postgres
+#     target: postgres                        # must match a services[].name above
+#     transform: ./scripts/sanitize.sql       # required when data_sensitivity is sanitized
+#     when: first_up                          # first_up | every_up | manual
