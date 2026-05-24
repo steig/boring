@@ -16,7 +16,12 @@ VERSION="0.6.0-dev"
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve BASH_SOURCE through symlinks so SCRIPT_DIR points at the real
+# install tree (lib/ + templates/) even when invoked via a ~/.local/bin
+# symlink that install.sh creates. Plain `dirname "${BASH_SOURCE[0]}"`
+# returns the symlink's directory and breaks sibling-dir lookups.
+# `readlink -f` exists on both BSD (macOS) and GNU (Linux) readlink.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 LIB_DIR="${BORING_LIB_DIR:-$SCRIPT_DIR/lib}"
 
 # ============================================================================
