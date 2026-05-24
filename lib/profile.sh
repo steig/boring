@@ -163,10 +163,50 @@ _profile_validate_json() {
 
   # Per ARD-0007, `preset:` is the canonical field; `theme:` is deprecated and
   # rewritten upstream of validation by _profile_rewrite_deprecated. So we only
-  # ever see `preset:` here.
+  # ever see `preset:` here. v1.0 preset list locked by ARD-0014.
   preset="$(jq -r '.preset // ""' <<<"$json")"
-  if [[ -n "$preset" && "$preset" != "shopify" && "$preset" != "django-node" ]]; then
-    log_error "$source: unknown preset '$preset' (supported: shopify, django-node)"; _bump
+  case "$preset" in
+    ""|shopify|django-node|python|node|node-postgres) ;;
+    *)
+      log_error "$source: unknown preset '$preset' (supported: shopify, django-node, python, node, node-postgres)"; _bump
+      ;;
+  esac
+
+  # preset_version (ARD-0014): a flat map { language: "version" } that compose
+  # passes through to docker build as --build-arg KEY_VERSION=value. Must be a
+  # map; each value must be a non-empty string. Keys are NOT validated against
+  # a known list at the validator level — the Dockerfile's ARG declarations
+  # are the contract, and an unknown key just becomes an unused build-arg
+  # (Docker warns but doesn't error). Surfaces as warning, not error, if set
+  # without preset: (the user probably forgot the preset field).
+  local pv_type
+  pv_type="$(jq -r '.preset_version | type' <<<"$json")"
+  if [[ "$pv_type" != "null" ]]; then
+    if [[ "$pv_type" != "object" ]]; then
+      log_error "$source: 'preset_version' must be a map of {language: \"version\"} (got: $pv_type)"; _bump
+    else
+      # Values must be non-empty strings restricted to characters that round-trip
+      # safely through compose-yaml quoting AND docker --build-arg. Allowed:
+      # alphanumerics, dot, dash, underscore, plus. Disallowed: quotes, spaces,
+      # backslashes, shell metacharacters. This is wider than realistic version
+      # strings need, but tight enough to reject anything that could break the
+      # build-args YAML emission downstream.
+      local pv_bad
+      pv_bad="$(jq -r '
+        .preset_version // {}
+        | to_entries
+        | map(select((.value | type) != "string" or (.value | test("^[A-Za-z0-9._+-]+$") | not)))
+        | .[] | .key
+      ' <<<"$json")"
+      if [[ -n "$pv_bad" ]]; then
+        while IFS= read -r k; do
+          log_error "$source: preset_version.$k must be a non-empty version string matching [A-Za-z0-9._+-]+ (e.g. \"3.12\")"; _bump
+        done <<<"$pv_bad"
+      fi
+      if [[ -z "$preset" ]]; then
+        log_warn "$source: 'preset_version' is set but 'preset' is not — preset_version will be ignored"
+      fi
+    fi
   fi
 
   has_df="$(jq -r '.stack.dockerfile // "" | length > 0' <<<"$json")"
@@ -372,6 +412,34 @@ _profile_normalize() {
         }
       };
 
+    # ARD-0014: node-postgres mirrors django-node sans the Django specifics.
+    # Same postgres sidecar shape, DB name keyed off the preset purpose, and
+    # default forward_ports tuned for the common Node-app shape (3000 covers
+    # Next.js/Express/Hono default; users override via forward_ports:).
+    def preset_node_postgres_defaults:
+      {
+        services: [{
+          name: "postgres",
+          image: "postgres:17",
+          env: {
+            POSTGRES_DB: "app",
+            POSTGRES_PASSWORD: "postgres"
+          },
+          volumes: ["postgres-data:/var/lib/postgresql/data"],
+          healthcheck: {
+            test: ["CMD", "pg_isready", "-U", "postgres"],
+            interval: "5s",
+            retries: 10
+          },
+          depends_on: []
+        }],
+        volumes: ["postgres-data"],
+        forward_ports: [3000],
+        env: {
+          DATABASE_URL: {kind: "literal", value: "postgres://postgres:postgres@postgres:5432/app"}
+        }
+      };
+
     def apply_preset($preset):
       if $preset == "django-node" then
         preset_django_node_defaults as $d
@@ -381,6 +449,17 @@ _profile_normalize() {
             forward_ports: (if ((.forward_ports // []) | length) == 0 then $d.forward_ports else .forward_ports end),
             env:           ($d.env + (.env // {}))
           }
+      elif $preset == "node-postgres" then
+        preset_node_postgres_defaults as $d
+        | . + {
+            services:      (if ((.services // []) | length) == 0      then $d.services      else .services end),
+            volumes:       (if ((.volumes // []) | length) == 0       then $d.volumes       else .volumes end),
+            forward_ports: (if ((.forward_ports // []) | length) == 0 then $d.forward_ports else .forward_ports end),
+            env:           ($d.env + (.env // {}))
+          }
+      # Pure python and pure node presets intentionally do not seed sidecars or
+      # default ports — they are single-language sandboxes (ARD-0014). A
+      # profile that wants a DB or extra services declares them explicitly.
       else .
       end;
 
@@ -391,11 +470,18 @@ _profile_normalize() {
          then "boring/shopify-theme:v1"
        elif $preset == "django-node" and $df == null and $bi == null
          then "boring/django-node:v1"
+       elif $preset == "python" and $df == null and $bi == null
+         then "boring/python:v1"
+       elif $preset == "node" and $df == null and $bi == null
+         then "boring/node:v1"
+       elif $preset == "node-postgres" and $df == null and $bi == null
+         then "boring/node-postgres:v1"
        else $bi end) as $resolved_bi
     | {
         name: $p.name,
         profile_version: ($p.profile_version // "1"),
         preset: $preset,
+        preset_version: ($p.preset_version // {}),
         stack: { dockerfile: $df, base_image: $resolved_bi },
         services: (($p.services // []) | map(normalize_service)),
         volumes: ($p.volumes // []),
