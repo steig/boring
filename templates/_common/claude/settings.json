@@ -2,7 +2,22 @@
   "permissions": {
     "deny": [
       "Edit(/workspace/.boring/**)",
-      "Write(/workspace/.boring/**)"
+      "Write(/workspace/.boring/**)",
+      "Edit(/home/dev/.claude/settings.json)",
+      "Write(/home/dev/.claude/settings.json)",
+      "Edit(/usr/local/boring/bin/audit-emit*)",
+      "Write(/usr/local/boring/bin/audit-emit*)"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "/usr/local/boring/bin/audit-emit-prompt_issued"}]}
+    ],
+    "PostToolUse": [
+      {"hooks": [{"type": "command", "command": "/usr/local/boring/bin/audit-emit-tool_used"}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "/usr/local/boring/bin/audit-emit-prompt_completed"}]}
     ]
   }
 }

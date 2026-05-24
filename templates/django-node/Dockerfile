@@ -61,8 +61,11 @@ RUN groupadd --gid 1000 dev \
 #   create the parent as root (same fix as the shopify preset).
 # /var/lib/boring pre-created and owned by dev so setup: marker writes work
 #   (ARD-0007 §5). Saves a sudo on the happy path.
-RUN mkdir -p /workspace /home/dev/.config /var/lib/boring \
- && chown -R dev:dev /workspace /home/dev /var/lib/boring
+# /var/log/boring pre-created for ARD-0010's audit FIFO bind-mount; world-
+#   writable so the dev user can write through the FIFO.
+RUN mkdir -p /workspace /home/dev/.config /var/lib/boring /var/log/boring \
+ && chown -R dev:dev /workspace /home/dev /var/lib/boring \
+ && chmod 0755 /var/log/boring
 
 # xdg-open shim. Headless containers have no browser; CLIs that try to spawn
 # one (gh auth login, claude auth, etc.) crash with ENOENT and abandon their
@@ -85,11 +88,23 @@ RUN mkdir -p /etc/boring/git-hooks \
 
 # Claude Code defaults baked into the container, shared across all presets via
 # the `common` build context (templates/_common/claude/):
-#   - settings.json       Trust-anchor deny rules (ARD-0006)
+#   - settings.json       Trust-anchor deny rules (ARD-0006) + audit hook
+#                         entries (ARD-0010 §3) + deny rules for the audit-emit
+#                         scripts themselves (ARD-0010 trust-anchor extension)
 #   - CLAUDE.md           Karpathy behavioral guidelines + boring local rules
 #   - skills/grill-me/    /grill-me available to the user inside the container
 RUN mkdir -p /home/dev/.claude
 COPY --from=common --chown=dev:dev claude/ /home/dev/.claude/
+
+# ARD-0010 audit-emit binaries: image-baked at /usr/local/boring/bin/. Same
+# pattern as the shopify preset — the Claude hooks declared in settings.json
+# call the per-kind symlinks; the script derives kind from $0. Owned root so
+# the dev user (even with sudo) can't replace via Claude.
+COPY --from=common --chown=root:root boring-bin/audit-emit /usr/local/boring/bin/audit-emit
+RUN chmod 0755 /usr/local/boring/bin/audit-emit \
+ && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-prompt_issued \
+ && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-tool_used \
+ && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-prompt_completed
 
 WORKDIR /workspace
 USER dev

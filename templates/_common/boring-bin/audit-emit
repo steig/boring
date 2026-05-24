@@ -1,0 +1,80 @@
+#!/bin/sh
+# audit-emit — in-container audit event emitter (ARD-0010).
+#
+# Wrap whatever the caller hands us (stdin payload OR command-line args) in
+# the boring JSON envelope and write one line to the audit FIFO. Three
+# Claude Code hooks (UserPromptSubmit, PostToolUse, Stop) invoke this through
+# per-kind symlinks (audit-emit-prompt_issued, audit-emit-tool_used,
+# audit-emit-prompt_completed) — the basename of $0 carries the kind.
+#
+# Trust-anchor surface (ARD-0006 + ARD-0010 derived requirement):
+#   This file is image-baked at /usr/local/boring/bin/audit-emit and the
+#   symlinks alongside it. They MUST be unmodifiable from inside the
+#   container — the Claude `deny` rules in /home/dev/.claude/settings.json
+#   include them. If you change this script, also extend the deny rules.
+#
+#   Defense-in-depth gap: the script lives in the container's writable
+#   layer (per the task spec — NOT bind-mounted), so a process with sudo
+#   inside the container can overwrite it. The Claude deny rule blocks
+#   the Claude-tool path (the load-bearing one for v1); sudo + Bash from a
+#   shell session is out of scope for v0.3's threat model (the threat is
+#   an LLM under prompt injection, not a human attacker with shell access).
+#   v1.x can promote this to a RO bind-mount if needed.
+#
+# Failure modes:
+#   - FIFO missing (collector down): we still try to write; the write fails
+#     silently. We exit 0 because an audit failure should never block the
+#     wrapped hook's actual behavior (Claude would interpret a non-zero
+#     hook exit as a tool refusal, which is much worse than a dropped audit
+#     event).
+#   - Malformed input: we still emit the envelope with `details: {}` so the
+#     event-occurred fact survives even when the payload is unparseable.
+
+FIFO="/var/log/boring/events.fifo"
+
+# Derive kind: prefer $0 basename suffix (when invoked through audit-emit-<kind>
+# symlink); fall back to $1 (when invoked directly as `audit-emit <kind>`).
+self="$(basename "$0")"
+case "$self" in
+  audit-emit-*) kind="${self#audit-emit-}" ;;
+  *)            kind="${1:-unknown}" ;;
+esac
+
+# Read stdin (Claude hooks deliver JSON on stdin); cap at a sane size to avoid
+# a runaway emission filling the FIFO buffer in a single line. 64 KiB is the
+# rough threshold beyond which we'd want to truncate-and-mark anyway.
+payload="$(head -c 65536 2>/dev/null || true)"
+
+# Build envelope. If `jq` is available (it is in both presets per their
+# Dockerfiles), we use it to construct valid JSON. If not, we hand-construct
+# with very basic escaping (the payload is the only untrusted field — we put
+# it in details verbatim only when it's valid JSON; otherwise as a string).
+ts="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+profile="${BORING_PROFILE_NAME:-unknown}"
+user="${BORING_HOST_USER:-${USER:-unknown}}"
+
+if command -v jq >/dev/null 2>&1; then
+  # Try to parse payload as JSON; if it parses, embed as a JSON object/value,
+  # else embed as a string in details.raw.
+  if printf '%s' "$payload" | jq -e . >/dev/null 2>&1; then
+    envelope="$(jq -nc \
+      --arg ts "$ts" --arg kind "$kind" --arg profile "$profile" --arg user "$user" \
+      --argjson details "${payload:-{\}}" \
+      '{ts:$ts, kind:$kind, profile:$profile, user:$user, details:$details}')"
+  else
+    envelope="$(jq -nc \
+      --arg ts "$ts" --arg kind "$kind" --arg profile "$profile" --arg user "$user" \
+      --arg raw "$payload" \
+      '{ts:$ts, kind:$kind, profile:$profile, user:$user, details:{raw:$raw}}')"
+  fi
+else
+  # Fallback (image without jq — shouldn't happen but defensive). Strip
+  # newlines + quotes from payload, embed as raw string. Lossy but safe.
+  safe="$(printf '%s' "$payload" | tr -d '\n\r' | sed 's/"/\\"/g')"
+  envelope="{\"ts\":\"$ts\",\"kind\":\"$kind\",\"profile\":\"$profile\",\"user\":\"$user\",\"details\":{\"raw\":\"$safe\"}}"
+fi
+
+# Write atomically: one printf, single FD, no flushing concerns at this size.
+# Redirect failures to /dev/null so the hook never fails on audit loss.
+printf '%s\n' "$envelope" >> "$FIFO" 2>/dev/null || true
+exit 0

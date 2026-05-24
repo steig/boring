@@ -288,6 +288,15 @@ _profile_validate_json() {
     log_error "$source: data_sensitivity must be one of internal/sanitized/public (got: $ds)"; _bump
   fi
 
+  # ARD-0010 §4: audit.prompts is per_user|shared, default per_user. The default
+  # is conservative — sharing prompts profile-wide is an explicit opt-in. Security
+  # events are not configurable: they are always profile-shared.
+  local audit_prompts
+  audit_prompts="$(jq -r '.audit.prompts // ""' <<<"$json")"
+  if [[ -n "$audit_prompts" && "$audit_prompts" != "per_user" && "$audit_prompts" != "shared" ]]; then
+    log_error "$source: audit.prompts must be one of per_user/shared (got: $audit_prompts)"; _bump
+  fi
+
   bad="$(jq -r '(.env // {}) | to_entries | map(select(
       (.value | type) != "string" and
       ((.value | type) != "object" or
@@ -409,6 +418,9 @@ _profile_normalize() {
           forbid_branches: ($p.guardrails.forbid_branches // []),
           forbid_commands: ($p.guardrails.forbid_commands // []),
           allowed_claude_tools: ($p.guardrails.allowed_claude_tools // [])
+        },
+        audit: {
+          prompts: ($p.audit.prompts // "per_user")
         },
         claude: { mcp: ($p.claude.mcp // []) }
       }
