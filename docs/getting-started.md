@@ -2,7 +2,7 @@
 
 This page takes you from zero to a working `boring open .` in about ten minutes. It assumes you're on macOS or Linux, and that you have a terminal open.
 
-If you'd rather read the design before you install, the [Architecture Decision Records](ards/index.md) cover every material call in detail. If you just want the pitch, the [home page](index.html) has it.
+If you'd rather read the design before you install, the [Architecture Decision Records](ards/index.md) cover every material call in detail. If you just want the pitch, [Why boring](why/) has it.
 
 ## TL;DR
 
