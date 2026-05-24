@@ -49,27 +49,46 @@ RUN printf '#!/bin/sh\necho "[boring] Open this URL in your host browser: $*" >&
       > /usr/local/bin/xdg-open \
  && chmod +x /usr/local/bin/xdg-open
 
-# Trust-anchor enforcement (ARD-0006). The .boring/profile.yaml that defines
-# this container must NOT be modifiable from inside the container — letting
-# an in-container agent edit its own sandbox definition defeats every other
-# guardrail. System-wide git pre-commit hook refuses commits touching .boring/;
-# Claude Code permissions deny Edit/Write under /workspace/.boring/** (the
-# settings.json that does this lives in claude/ and is COPYd below).
+# Trust-anchor enforcement (ARD-0006 + ARD-0009). The .boring/profile.yaml
+# that defines this container, and the generated artifacts at
+# .devcontainer/boring-runtime/ that enforce it, must NOT be modifiable from
+# inside the container — letting an in-container agent edit either defeats
+# every other guardrail. core.hooksPath points at the boring-runtime dir
+# (bind-mounted RO by the host) where boring writes pre-commit + pre-push
+# at `boring open` time. /etc/boring/git-hooks/pre-commit is retained as a
+# fallback so the trust anchor still fires when the runtime dir is absent
+# (e.g. a stale container without a regenerated runtime dir).
 RUN mkdir -p /etc/boring/git-hooks \
  && printf '#!/bin/sh\nset -e\nif git diff --cached --name-only | grep -q "^\\.boring/"; then\n  echo "[boring] refusing to commit changes to .boring/ from inside the container." >&2\n  echo "         .boring/profile.yaml is the trust anchor (ARD-0006). Edit it on the HOST." >&2\n  exit 1\nfi\n' \
       > /etc/boring/git-hooks/pre-commit \
  && chmod +x /etc/boring/git-hooks/pre-commit \
- && git config --system core.hooksPath /etc/boring/git-hooks
+ && git config --system core.hooksPath /workspace/.devcontainer/boring-runtime
+
+# ARD-0009: prepend the boring-runtime command-wrapper dir to PATH for all
+# login shells. Wrappers are generated host-side at `boring open` time and
+# bind-mounted RO; this snippet just ensures they shadow the real binaries.
+RUN printf 'export PATH="/workspace/.devcontainer/boring-runtime/bin:$PATH"\n' \
+      > /etc/profile.d/boring-path.sh \
+ && chmod 0644 /etc/profile.d/boring-path.sh
+ENV PATH="/workspace/.devcontainer/boring-runtime/bin:${PATH}"
 
 # Claude Code defaults baked into the container, shared across all theme
 # presets via the `common` build context (templates/_common/claude/):
-#   - settings.json       Trust-anchor deny rules (ARD-0006)
+#   - settings.json       Trust-anchor deny rules (ARD-0006); baseline that
+#                         boring's host-side jq merge layers `permissions.allow`
+#                         on top of per profile (ARD-0009).
 #   - CLAUDE.md           Karpathy behavioral guidelines + boring local rules
 #   - skills/grill-me/    /grill-me available to the user inside the container
 # When adding new theme presets (django, rails, etc.), copy this RUN+COPY
 # pair verbatim — the `common` context is wired up by lib/compose.sh.
+# After COPY, swap settings.json for a symlink to the boring-runtime mount
+# so Claude reads the merged file (ARD-0009). The dangling symlink at image
+# build time becomes live once the container starts and the bind-mount lands.
 RUN mkdir -p /home/dev/.claude
 COPY --from=common --chown=dev:dev claude/ /home/dev/.claude/
+RUN rm -f /home/dev/.claude/settings.json \
+ && ln -s /workspace/.devcontainer/boring-runtime/claude/settings.json /home/dev/.claude/settings.json \
+ && chown -h dev:dev /home/dev/.claude/settings.json
 
 WORKDIR /workspace
 USER dev

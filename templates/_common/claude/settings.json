@@ -2,7 +2,9 @@
   "permissions": {
     "deny": [
       "Edit(/workspace/.boring/**)",
-      "Write(/workspace/.boring/**)"
+      "Write(/workspace/.boring/**)",
+      "Edit(/workspace/.devcontainer/boring-runtime/**)",
+      "Write(/workspace/.devcontainer/boring-runtime/**)"
     ]
   }
 }
