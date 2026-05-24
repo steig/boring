@@ -110,5 +110,6 @@ When `theme: shopify` is declared, `lib/egress.sh` auto-expands the allowlist wi
 6. **Egress enforcement mechanism** (the iptables-in-container vs. proxy-sidecar prototype from ARD-0001). Deferred until Shopify v1 works *without* it — the preset can be authored and validated before it's enforced.
 7. **Headless `boring run`.** Deferred. Interactive Shopify-first proves the shared core; headless is the second consumer.
 8. **Django sidecar work + dbx integration.** v1.x, after Shopify validates the minimal case end-to-end. This is where steps #4–#7 from ARD-0002 (compose with sidecars, env rewrites, dbx-into-sidecar) come back online.
+   > **Amended by [ARD-0007](ard-0007-django-node-and-multi-service-compose.md).** Step #8 is replaced by ARD-0007's 9-step implementation order for the django-node preset, multi-service compose, schema versioning, and at-start secret resolution. dbx integration remains deferred to a later v1.x slice per ARD-0007's closing note.
 
 Steps #1–#5 are v1. Steps #6–#8 are v1.x.

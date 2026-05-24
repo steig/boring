@@ -4,11 +4,17 @@
 #
 # Consumes the normalized JSON from profile_load (lib/profile.sh) and writes two
 # files into <output-dir>/.devcontainer/:
-#   - docker-compose.yml   (single `dev` service per ARD-0004 v1 minimal case)
-#   - devcontainer.json    (per ARD-0003: dockerComposeFile + service: dev)
+#   - docker-compose.yml   (dev service + ARD-0007 sidecars + top-level volumes)
+#   - devcontainer.json    (per ARD-0003: dockerComposeFile + service: dev;
+#                           ARD-0007: postCreateCommand for `setup:` lifecycle)
 #
 # Secret-URI env vars are NOT resolved here — cmd_open handles that at start
 # time and injects via the devcontainer's remoteEnv. We only emit literal env.
+#
+# When `services:` is non-empty (django-node and friends), each entry becomes
+# its own compose service alongside `dev`, and `dev.depends_on` is auto-wired
+# to wait on each sidecar (condition: service_healthy when the sidecar has a
+# healthcheck, else service_started).
 
 # Where boring's bundled templates live. Defaults to the repo's templates/ dir
 # when running from a clone; install.sh can override via env.
@@ -39,22 +45,29 @@ compose_generate() {
 # ----------------------------------------------------------------------------
 _compose_emit_yaml() {
   local profile_json="$1"
-  local theme dockerfile base_image template_path
-  theme="$(jq -r '.theme // ""' <<<"$profile_json")"
+  local preset dockerfile base_image template_path
+  preset="$(jq -r '.preset // ""' <<<"$profile_json")"
   dockerfile="$(jq -r '.stack.dockerfile // ""' <<<"$profile_json")"
   base_image="$(jq -r '.stack.base_image // ""' <<<"$profile_json")"
 
-  # Build/image directive. Theme presets resolve to a template Dockerfile path
-  # that boring bundles; explicit dockerfile/base_image override.
-  local image_directive
+  # Build/image directive. Presets resolve to a template Dockerfile path that
+  # boring bundles; explicit dockerfile/base_image override. The base_image
+  # values "boring/<preset>:v1" are sentinel values set by lib/profile.sh's
+  # normalizer — never real registry images.
+  local image_directive preset_subdir=""
+  case "$base_image" in
+    boring/shopify-theme:v1) preset_subdir="shopify" ;;
+    boring/django-node:v1)   preset_subdir="django-node" ;;
+  esac
+
   if [[ -n "$dockerfile" ]]; then
     image_directive="    build:
       context: ..
       dockerfile: $dockerfile"
-  elif [[ "$base_image" == "boring/shopify-theme:v1" ]]; then
-    template_path="$BORING_TEMPLATE_DIR/shopify"
+  elif [[ -n "$preset_subdir" ]]; then
+    template_path="$BORING_TEMPLATE_DIR/$preset_subdir"
     local common_path="$BORING_TEMPLATE_DIR/_common"
-    [[ -d "$template_path" ]] || die "compose_generate: theme preset template missing: $template_path"
+    [[ -d "$template_path" ]] || die "compose_generate: preset template missing: $template_path"
     [[ -d "$common_path" ]]   || die "compose_generate: shared template missing: $common_path"
     # additional_contexts lets the preset Dockerfile COPY --from=common
     # to pull shared assets (Claude defaults, skills, etc.) out of
@@ -66,7 +79,7 @@ _compose_emit_yaml() {
   elif [[ -n "$base_image" ]]; then
     image_directive="    image: $base_image"
   else
-    die "compose_generate: profile has neither stack.dockerfile nor stack.base_image (and no theme preset matched)"
+    die "compose_generate: profile has neither stack.dockerfile nor stack.base_image (and no preset matched)"
   fi
 
   # Volumes: source bind-mount + each profile mount entry.
@@ -98,6 +111,61 @@ _compose_emit_yaml() {
     | join("\n")
   ' <<<"$profile_json")"
 
+  # depends_on for the dev service. Auto-wires the dev service to wait for
+  # every declared sidecar — service_healthy if the sidecar has a healthcheck,
+  # service_started otherwise. Long-form (per-service condition) so we can
+  # express the healthcheck distinction without copying compose docs.
+  local depends_block
+  depends_block="$(jq -r '
+    .services
+    | map("      \(.name):\n        condition: " +
+          (if .healthcheck == null then "service_started" else "service_healthy" end))
+    | join("\n")
+  ' <<<"$profile_json")"
+
+  # Sidecar service blocks. Each emits image, env, volumes (if any), and
+  # healthcheck (if any). depends_on between sidecars is supported through
+  # the profile-declared depends_on list.
+  local sidecars_block
+  sidecars_block="$(jq -r '
+    .services
+    | map(
+        "  \(.name):\n" +
+        "    image: \(.image)\n" +
+        (if (.env | length) > 0 then
+           "    environment:\n" +
+           (.env | to_entries | map("      \(.key): \"\(.value)\"") | join("\n")) + "\n"
+         else "" end) +
+        (if (.volumes | length) > 0 then
+           "    volumes:\n" +
+           (.volumes | map("      - \"\(.)\"") | join("\n")) + "\n"
+         else "" end) +
+        (if .healthcheck != null then
+           "    healthcheck:\n" +
+           (.healthcheck | to_entries | map(
+              "      \(.key): " +
+              (if (.value | type) == "array"
+                then "[" + (.value | map("\"\(.)\"") | join(", ")) + "]"
+                else "\(.value)" end)
+            ) | join("\n")) + "\n"
+         else "" end) +
+        (if (.depends_on | length) > 0 then
+           "    depends_on:\n" +
+           (.depends_on | map("      - \(.)") | join("\n")) + "\n"
+         else "" end)
+      )
+    | join("")
+  ' <<<"$profile_json")"
+
+  # Top-level named volumes. Compose requires these to be declared at the file
+  # root when referenced by service.volumes entries of the form "name:/path".
+  local top_volumes_block
+  top_volumes_block="$(jq -r '
+    if (.volumes | length) == 0 then ""
+    else "\nvolumes:\n" + (.volumes | map("  \(.): {}") | join("\n")) + "\n"
+    end
+  ' <<<"$profile_json")"
+
   cat <<EOF
 # Generated by boring — do not edit by hand.
 # Edit .boring/profile.yaml in this repo and re-run \`boring open\`.
@@ -118,15 +186,36 @@ EOF
     echo "    environment:"
     echo "$env_block"
   fi
+  if [[ -n "$depends_block" ]]; then
+    echo "    depends_on:"
+    echo "$depends_block"
+  fi
+  if [[ -n "$sidecars_block" ]]; then
+    # Leading newline so the first sidecar is visually separated from the dev
+    # block — non-functional but easier to scan.
+    echo
+    printf '%s' "$sidecars_block"
+  fi
+  if [[ -n "$top_volumes_block" ]]; then
+    printf '%s' "$top_volumes_block"
+  fi
 }
 
 # ----------------------------------------------------------------------------
 # Internal: emit devcontainer.json
 # ----------------------------------------------------------------------------
+# `setup:` (ARD-0007 §5) → `postCreateCommand`. The chain (set -e + marker
+# dance + setup commands) is built by profile_setup_command in lib/profile.sh
+# — single source so the boring-side re-run path doesn't drift from the
+# devcontainer-side hook.
 _compose_emit_devcontainer() {
   local profile_json="$1"
+  local setup_cmd
+  setup_cmd="$(profile_setup_command "$profile_json")"
+
   jq -n \
-    --argjson p "$profile_json" '
+    --argjson p "$profile_json" \
+    --arg setup_cmd "$setup_cmd" '
     {
       "name": $p.name,
       "dockerComposeFile": "docker-compose.yml",
@@ -135,5 +224,6 @@ _compose_emit_devcontainer() {
       "forwardPorts": $p.forward_ports,
       "shutdownAction": "stopCompose"
     }
+    + (if $setup_cmd == "" then {} else {"postCreateCommand": $setup_cmd} end)
   '
 }

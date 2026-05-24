@@ -38,6 +38,37 @@ doctor_run() {
     fail=1
   fi
 
+  # jq + yq power lib/profile.sh and lib/compose.sh. Pre-flight here so a
+  # missing one surfaces in `boring doctor` and not as a confusing runtime
+  # error on `boring open`. yq has TWO popular implementations with
+  # incompatible syntax — mikefarah/yq (Go) vs. kislyuk/yq (Python wrapper
+  # around jq). boring requires the Go variant; warn explicitly if the
+  # Python one is on PATH.
+  log_step "Profile parsing tools"
+  if command -v jq &>/dev/null; then
+    log_success "jq present ($(jq --version 2>/dev/null))"
+  else
+    log_error "jq not found."
+    log_info "  Install: brew install jq  (or apt install jq)"
+    fail=1
+  fi
+  if command -v yq &>/dev/null; then
+    local yq_version
+    yq_version="$(yq --version 2>/dev/null)"
+    if echo "$yq_version" | grep -qi mikefarah; then
+      log_success "yq present ($yq_version)"
+    else
+      log_error "yq is on PATH but not the mikefarah/yq Go implementation that boring requires."
+      log_info "  Detected: $yq_version"
+      log_info "  Install the Go yq: brew install yq  (mikefarah/yq), NOT pip install yq"
+      fail=1
+    fi
+  else
+    log_error "yq not found."
+    log_info "  Install: brew install yq  (mikefarah/yq — the Go variant, not the Python wrapper)"
+    fail=1
+  fi
+
   log_step "dbx (ARD-0002)"
   if command -v dbx &>/dev/null; then
     local v
