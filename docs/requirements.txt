@@ -1,0 +1,8 @@
+# Pinned dependencies for building the MkDocs Material doc site.
+#
+# Consumed by .github/workflows/pages.yml.
+# To bump: edit the version, run `mkdocs build --strict` locally to confirm
+# the new versions still produce a clean build, commit.
+
+mkdocs-material==9.7.6
+mkdocs-include-markdown-plugin==7.3.0

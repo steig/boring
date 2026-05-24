@@ -384,7 +384,7 @@
       </div>
       <div class="card">
         <div class="kicker">Secrets never touch disk</div>
-        <p style="margin-bottom: 12px;">The profile declares URIs: <code>OPENROUTER_API_KEY: secret://op://Lamps/&hellip;</code>. At container-start time, boring shells out to <code>op read</code> (or <code>security find-generic-password</code>, or <code>vault kv get</code>, etc.), captures the value in memory, and passes it to <code>devcontainer up --remote-env KEY=VALUE</code>.</p>
+        <p style="margin-bottom: 12px;">The profile declares URIs: <code>OPENROUTER_API_KEY: secret://op://MyTeam/&hellip;</code>. At container-start time, boring shells out to <code>op read</code> (or <code>security find-generic-password</code>, or <code>vault kv get</code>, etc.), captures the value in memory, and passes it to <code>devcontainer up --remote-env KEY=VALUE</code>.</p>
         <p>Resolved values are never written to <code>docker-compose.yml</code> or <code>devcontainer.json</code> &mdash; even though those files are gitignored. On-disk secrets are a backup-and-sync exfil channel boring won&rsquo;t open. <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0002-dbx-as-runtime-dependency.md">ARD-0002</a>.</p>
       </div>
       <div class="card">

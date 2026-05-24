@@ -25,3 +25,6 @@
 # Test scratch
 /tmp/
 /.tmp/
+
+# MkDocs build output (site is built and deployed via .github/workflows/pages.yml)
+/site/

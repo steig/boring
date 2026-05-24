@@ -1,0 +1,139 @@
+# MkDocs Material site for boring.
+#
+# Build:    mkdocs build --strict
+# Serve:    mkdocs serve
+# Deploy:   .github/workflows/pages.yml runs `mkdocs build` and publishes
+#           the resulting `site/` via actions/deploy-pages on every push to main.
+#
+# Layout notes:
+# - The marketing landing page lives at docs/index.html (rich custom CSS,
+#   hand-authored). MkDocs copies it verbatim to site/index.html — it is NOT
+#   converted from markdown. To keep that working, we do NOT define an
+#   `index.md` and we do NOT put a "Home" entry in the nav (a nav entry would
+#   make MkDocs look for a markdown source).
+# - The doc-site sections (Getting Started, Profile Reference, ARDs, Changelog)
+#   are markdown and live alongside docs/index.html under docs/.
+# - CHANGELOG.md is mounted into the build via the same nav by symlink.
+
+site_name: boring
+site_description: >-
+  Profile-driven dev containers for any stack — turn any repo into a one-command,
+  isolated dev environment your whole team can think inside.
+site_url: https://steig.github.io/boring/
+site_author: Tom Steigerwald
+
+repo_name: steig/boring
+repo_url: https://github.com/steig/boring
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    # Default: dark mode.
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: lime
+      accent: lime
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    # Light mode toggle.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: green
+      accent: green
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      check_paths: true
+      base_path:
+        - .
+        - docs
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+plugins:
+  - search
+  - include-markdown
+
+# We intentionally do NOT list a "Home" entry — the existing docs/index.html
+# is the home page and MkDocs copies it through verbatim.
+nav:
+  - Getting Started: getting-started.md
+  - Anatomy of a Profile: profile-reference.md
+  - Architecture Decision Records:
+      - ards/index.md
+      - "ARD-0001 — v1 architecture": ards/ard-0001-v1-architecture.md
+      - "ARD-0002 — dbx as runtime dependency": ards/ard-0002-dbx-as-runtime-dependency.md
+      - "ARD-0003 — devcontainer CLI as runtime dependency": ards/ard-0003-devcontainer-cli-as-runtime-dependency.md
+      - "ARD-0004 — Shopify-first as v1 dogfood path": ards/ard-0004-shopify-first-as-dogfood-path.md
+      - "ARD-0005 — security model inversion": ards/ard-0005-security-model-inversion.md
+      - "ARD-0006 — profile is the trust anchor": ards/ard-0006-profile-is-the-trust-anchor.md
+      - "ARD-0007 — django-node + multi-service compose": ards/ard-0007-django-node-and-multi-service-compose.md
+      - "ARD-0008 — v0.3 → v1.0 release plan": ards/ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md
+      - "ARD-0009 — guardrails codegen architecture": ards/ard-0009-guardrails-codegen-architecture.md
+      - "ARD-0010 — audit log + prompt tracing": ards/ard-0010-audit-log-and-prompt-tracing-infrastructure.md
+      - "ARD-0011 — egress enforcement via iptables": ards/ard-0011-egress-enforcement-via-iptables.md
+      - "ARD-0012 — dbx restore integration": ards/ard-0012-dbx-restore-integration.md
+      - "ARD-0013 — headless boring run": ards/ard-0013-headless-boring-run.md
+      - "ARD-0014 — preset versioning + v1.0 preset list": ards/ard-0014-preset-versioning-and-v10-preset-list.md
+      - "ARD-0015 — ulogd2 sidecar for cross-platform learn-mode": ards/ard-0015-ulogd2-sidecar-for-cross-platform-learn-mode.md
+  - Changelog: changelog.md
+
+# ards/README.md is the GitHub-facing convention doc (so it renders on the
+# GitHub directory view). It conflicts with ards/index.md (both are the
+# directory's auto-index target). The reader-facing landing is index.md;
+# README.md is excluded from the built site but stays in the repo.
+exclude_docs: |
+  ards/README.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/steig/boring
+      name: boring on GitHub
+
+# `--strict` will fail the build on any warning (broken link, orphan page, etc.).
+# Run it that way both locally and in CI.
+strict: false
