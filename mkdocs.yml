@@ -81,6 +81,12 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
+  # Material icons (:material-rocket-launch:, etc.) render as inline SVG.
+  # Without this, the colon-syntax shows as literal text, which looks like
+  # a templating bug. Required for the grid cards on the docs home.
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.details
   - pymdownx.highlight:
       anchor_linenums: true
@@ -102,32 +108,20 @@ plugins:
   - search
   - include-markdown
 
-# Home is docs/index.md (the docs landing); Why boring is the marketing
-# pitch at docs/why/index.html (served at /why/). The pitch is NOT in nav
-# because raw-HTML pages don't get a sidebar — link to it from index.md
-# instead. mkdocs-material's `navigation.indexes` feature uses the first
-# entry under each section heading as the section's landing.
+# Nav is intentionally lean: the ARD list (15+ entries) collapses into a
+# single "Architecture Decision Records" link that lands on ards/index.md,
+# which already enumerates them with one-line summaries. Anyone who wants
+# the whole list gets it in one click; nobody who doesn't has to scroll
+# past it in every page's sidebar.
+#
+# Why boring (the marketing pitch at docs/why/index.html, served at /why/)
+# is NOT in nav — raw-HTML pages don't get a sidebar entry cleanly, and the
+# docs home (index.md) links to it prominently for anyone who wants it.
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Anatomy of a Profile: profile-reference.md
-  - Architecture Decision Records:
-      - ards/index.md
-      - "ARD-0001 — v1 architecture": ards/ard-0001-v1-architecture.md
-      - "ARD-0002 — dbx as runtime dependency": ards/ard-0002-dbx-as-runtime-dependency.md
-      - "ARD-0003 — devcontainer CLI as runtime dependency": ards/ard-0003-devcontainer-cli-as-runtime-dependency.md
-      - "ARD-0004 — Shopify-first as v1 dogfood path": ards/ard-0004-shopify-first-as-dogfood-path.md
-      - "ARD-0005 — security model inversion": ards/ard-0005-security-model-inversion.md
-      - "ARD-0006 — profile is the trust anchor": ards/ard-0006-profile-is-the-trust-anchor.md
-      - "ARD-0007 — django-node + multi-service compose": ards/ard-0007-django-node-and-multi-service-compose.md
-      - "ARD-0008 — v0.3 → v1.0 release plan": ards/ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md
-      - "ARD-0009 — guardrails codegen architecture": ards/ard-0009-guardrails-codegen-architecture.md
-      - "ARD-0010 — audit log + prompt tracing": ards/ard-0010-audit-log-and-prompt-tracing-infrastructure.md
-      - "ARD-0011 — egress enforcement via iptables": ards/ard-0011-egress-enforcement-via-iptables.md
-      - "ARD-0012 — dbx restore integration": ards/ard-0012-dbx-restore-integration.md
-      - "ARD-0013 — headless boring run": ards/ard-0013-headless-boring-run.md
-      - "ARD-0014 — preset versioning + v1.0 preset list": ards/ard-0014-preset-versioning-and-v10-preset-list.md
-      - "ARD-0015 — ulogd2 sidecar for cross-platform learn-mode": ards/ard-0015-ulogd2-sidecar-for-cross-platform-learn-mode.md
+  - Architecture Decision Records: ards/index.md
   - Changelog: changelog.md
 
 # ards/README.md is the GitHub-facing convention doc (so it renders on the
@@ -136,6 +130,12 @@ nav:
 # README.md is excluded from the built site but stays in the repo.
 exclude_docs: |
   ards/README.md
+
+# Per-ARD files exist in docs/ards/ but aren't in nav (they're enumerated on
+# ards/index.md instead). MkDocs --strict would otherwise warn about each
+# one as an orphan; this tells it the omission is intentional.
+not_in_nav: |
+  ards/ard-*.md
 
 extra:
   # PostHog key read from env at build time. !ENV [VAR, default] is MkDocs's
