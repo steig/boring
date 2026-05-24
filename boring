@@ -81,6 +81,13 @@ cmd_open() {
   compose_generate "$profile_json" "$repo"
   log_success ".devcontainer/ written"
 
+  # ARD-0009: emit the guardrails runtime artifacts (pre-push hook, command
+  # wrappers, merged Claude settings) into .devcontainer/boring-runtime/.
+  # Bind-mounted RO into the container by compose_generate's volumes block.
+  log_step "Generating .devcontainer/boring-runtime/ (ARD-0009 guardrails)"
+  _compose_emit_guardrails_runtime "$profile_json" "$repo"
+  log_success "boring-runtime/ written"
+
   log_step "Bringing dev container up (devcontainer up)"
   # ${arr[@]+"${arr[@]}"} (unwrapped) is the bash-3.2-safe idiom that expands
   # to nothing on an empty array under `set -u`. The fully-wrapped variant
