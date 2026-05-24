@@ -54,7 +54,25 @@ jobs:
       - name: mkdocs build --strict
         # --strict promotes warnings (broken links, orphan nav entries, etc.)
         # to errors. Same flag used locally; both gates must pass.
+        # POSTHOG_KEY/HOST are read via mkdocs.yml's !ENV directive and
+        # consumed by overrides/main.html. Unset → analytics off (the
+        # template's {% if %} short-circuits) — safe for any repo fork
+        # that hasn't configured the secret.
+        env:
+          POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
         run: mkdocs build --strict
+
+      - name: inject posthog into marketing landing
+        # MkDocs copies docs/index.html through verbatim (no Jinja), so the
+        # overrides/main.html template doesn't reach it. This script does
+        # a post-build awk pass to land the same snippet before </head> in
+        # site/index.html. No-op when POSTHOG_KEY is unset (matches the
+        # MkDocs override behavior).
+        env:
+          POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
+        run: scripts/inject-posthog.sh site/index.html
 
       - name: upload pages artifact
         uses: actions/upload-pages-artifact@v3

@@ -31,6 +31,10 @@ site_dir: site
 
 theme:
   name: material
+  # PostHog analytics injection lives in overrides/main.html — gated on
+  # the POSTHOG_KEY env-var via extra.posthog_key below. No-op locally
+  # (env unset → key empty → {% if %} short-circuits → no snippet).
+  custom_dir: overrides
   language: en
   features:
     - navigation.instant
@@ -129,6 +133,13 @@ exclude_docs: |
   ards/README.md
 
 extra:
+  # PostHog key read from env at build time. !ENV [VAR, default] is MkDocs's
+  # YAML env-var directive — falls back to "" locally, which the override
+  # template's {% if %} treats as "skip analytics." CI sets POSTHOG_KEY
+  # from a GitHub Actions secret (Settings → Secrets and variables →
+  # Actions → New repository secret → name POSTHOG_KEY).
+  posthog_key: !ENV [POSTHOG_KEY, ""]
+  posthog_host: !ENV [POSTHOG_HOST, "https://us.i.posthog.com"]
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/steig/boring
