@@ -5,10 +5,16 @@
 #   Settings → Pages → Build and deployment → Source → "GitHub Actions"
 #
 # After that, every push to main rebuilds and redeploys to
-# https://steig.github.io/boring/. The marketing landing page lives at
-# docs/index.html (verbatim copy via MkDocs); the doc-site sections
-# (Getting Started, Profile Reference, ARDs, Changelog) are markdown
-# under docs/ + the root CHANGELOG.md.
+# https://steig.github.io/boring/.
+#
+# Docs home (markdown):       docs/index.md     → /
+# Doc sections (markdown):    docs/*.md         → /getting-started/, /profile-reference/, etc.
+# ARDs (markdown):            docs/ards/*.md    → /ards/...
+# Marketing pitch (raw HTML): docs/why/index.html → /why/
+#
+# The MkDocs build renders the markdown and copies the why/ tree verbatim.
+# PostHog reaches the markdown pages via overrides/main.html (Jinja); it
+# reaches /why/ via a post-build awk pass (scripts/inject-posthog.sh).
 
 name: pages
 
@@ -63,16 +69,18 @@ jobs:
           POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
         run: mkdocs build --strict
 
-      - name: inject posthog into marketing landing
-        # MkDocs copies docs/index.html through verbatim (no Jinja), so the
-        # overrides/main.html template doesn't reach it. This script does
+      - name: inject posthog into the marketing pitch page
+        # MkDocs copies docs/why/index.html through verbatim (no Jinja), so
+        # the overrides/main.html template doesn't reach it. This script does
         # a post-build awk pass to land the same snippet before </head> in
-        # site/index.html. No-op when POSTHOG_KEY is unset (matches the
+        # site/why/index.html. No-op when POSTHOG_KEY is unset (matches the
         # MkDocs override behavior).
+        # docs home (site/index.html) is markdown-rendered through MkDocs and
+        # picks up the override directly — no separate inject step needed.
         env:
           POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
           POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
-        run: scripts/inject-posthog.sh site/index.html
+        run: scripts/inject-posthog.sh site/why/index.html
 
       - name: upload pages artifact
         uses: actions/upload-pages-artifact@v3

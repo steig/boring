@@ -6,13 +6,14 @@
 #           the resulting `site/` via actions/deploy-pages on every push to main.
 #
 # Layout notes:
-# - The marketing landing page lives at docs/index.html (rich custom CSS,
-#   hand-authored). MkDocs copies it verbatim to site/index.html — it is NOT
-#   converted from markdown. To keep that working, we do NOT define an
-#   `index.md` and we do NOT put a "Home" entry in the nav (a nav entry would
-#   make MkDocs look for a markdown source).
+# - docs/index.md is the docs home — the page served at github.io/boring/.
+#   Convention says github.io/<repo>/ is docs; we follow that.
+# - The marketing/pitch page (rich hand-authored HTML+CSS) lives at
+#   docs/why/index.html and serves at github.io/boring/why/. MkDocs copies
+#   the html directory through verbatim. The same file is also published to
+#   s3.steig.io/public/boring/index.html via scripts/deploy-site.sh.
 # - The doc-site sections (Getting Started, Profile Reference, ARDs, Changelog)
-#   are markdown and live alongside docs/index.html under docs/.
+#   are markdown and live alongside index.md under docs/.
 # - CHANGELOG.md is mounted into the build via the same nav by symlink.
 
 site_name: boring
@@ -101,9 +102,13 @@ plugins:
   - search
   - include-markdown
 
-# We intentionally do NOT list a "Home" entry — the existing docs/index.html
-# is the home page and MkDocs copies it through verbatim.
+# Home is docs/index.md (the docs landing); Why boring is the marketing
+# pitch at docs/why/index.html (served at /why/). The pitch is NOT in nav
+# because raw-HTML pages don't get a sidebar — link to it from index.md
+# instead. mkdocs-material's `navigation.indexes` feature uses the first
+# entry under each section heading as the section's landing.
 nav:
+  - Home: index.md
   - Getting Started: getting-started.md
   - Anatomy of a Profile: profile-reference.md
   - Architecture Decision Records:

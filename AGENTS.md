@@ -32,10 +32,15 @@ templates/
     .dockerignore
     README.md
 docs/
-  index.html            # Marketing/intro page. Push to s3.steig.io/public/boring/ via `scripts/deploy-site.sh`.
+  index.md              # Docs landing — served at github.io/boring/.
+  getting-started.md, profile-reference.md, changelog.md  # MkDocs-rendered pages.
+  why/index.html        # Rich marketing/pitch page. Served at github.io/boring/why/.
+                        # Also pushed to s3.steig.io/public/boring/ via `scripts/deploy-site.sh`.
   ards/                 # Architectural Decision Records. New material decisions go here.
 scripts/
-  deploy-site.sh        # mc cp docs/index.html → steig/public/boring/index.html (then verify).
+  deploy-site.sh        # mc cp docs/why/index.html → steig/public/boring/index.html (vanity URL).
+  test.sh               # discover + run smoke tests under scripts/ and tests/.
+  inject-posthog.sh     # post-build awk pass that lands the PostHog snippet before </head>.
 ```
 
 Anything not yet implemented is marked `STUB` in the file header and contains a `die "... not yet implemented"` body plus a `TODO(impl, ARD-NNNN impl-order #X)` comment.

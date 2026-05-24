@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 #
-# scripts/deploy-site.sh — push docs/index.html to the public MinIO bucket.
+# scripts/deploy-site.sh — push the marketing/pitch page to the public MinIO bucket.
 #
-# The marketing/intro page lives at s3.steig.io/public/boring/index.html.
+# Source:      docs/why/index.html  (the rich hand-authored marketing landing,
+#              also served at https://steig.github.io/boring/why/ via MkDocs).
+# Destination: https://s3.steig.io/public/boring/index.html  (vanity URL; the
+#              s3 side keeps the marketing as the front door, while github.io
+#              has docs at the root per docs convention).
+#
 # Prerequisite: an `mc` alias named `steig` pointing at https://s3.steig.io
 # with valid credentials. Set up once with:
 #
@@ -13,6 +18,9 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+SRC="docs/why/index.html"
+DST="steig/public/boring/index.html"
 
 if ! command -v mc &>/dev/null; then
   echo "error: mc (MinIO client) not installed. brew install minio/stable/mc" >&2
@@ -25,9 +33,11 @@ if ! mc alias list steig &>/dev/null; then
   exit 1
 fi
 
-LOCAL_BYTES="$(wc -c < docs/index.html)"
-echo "==> Uploading docs/index.html (${LOCAL_BYTES} bytes) to steig/public/boring/"
-mc cp docs/index.html steig/public/boring/index.html
+[[ -f "$SRC" ]] || { echo "error: $SRC does not exist" >&2; exit 1; }
+
+LOCAL_BYTES="$(wc -c < "$SRC")"
+echo "==> Uploading $SRC (${LOCAL_BYTES} bytes) to $DST"
+mc cp "$SRC" "$DST"
 
 echo "==> Verifying live"
 LIVE_RESPONSE="$(curl -sS -o /dev/null -w '%{http_code} %{size_download}' https://s3.steig.io/public/boring/index.html)"

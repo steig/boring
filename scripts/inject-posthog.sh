@@ -2,11 +2,12 @@
 #
 # scripts/inject-posthog.sh — inject the PostHog snippet into a built HTML file.
 #
-# Used by the GitHub Pages workflow after `mkdocs build` to instrument
-# docs/index.html (the marketing landing page, which MkDocs copies through
-# verbatim — no Jinja templating). The MkDocs-generated pages are already
-# instrumented via overrides/main.html, so this script only touches the
-# landing page.
+# Used by the GitHub Pages workflow after `mkdocs build` to instrument the
+# marketing pitch at site/why/index.html (the rich landing page, which MkDocs
+# copies through verbatim from docs/why/index.html — no Jinja templating).
+# MkDocs-rendered pages (the docs home, getting-started, profile-reference,
+# ARDs, changelog) are already instrumented via overrides/main.html. This
+# script handles only the raw-HTML page outside the markdown pipeline.
 #
 # Usage:
 #   POSTHOG_KEY=phc_xxx scripts/inject-posthog.sh site/index.html
