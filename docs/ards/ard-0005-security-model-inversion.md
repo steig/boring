@@ -76,6 +76,8 @@ ARD-0001's egress allowlist (and the `--learn-mode` observation flow) remains th
 
 This is a reasoned skip, not an oversight. ARD-0001's egress section stays valid as written; the work is deferred, not rejected. A cross-link from ARD-0001's egress section back to this ARD belongs on the next edit of ARD-0001.
 
+> **Closed by [ARD-0011](ard-0011-egress-enforcement-via-iptables.md).** v0.4 ships egress enforcement (iptables-in-container with `NET_ADMIN` capability) + `--learn-mode` together — the deferral above is lifted by [ARD-0008](ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md)'s release plan. The cross-link this paragraph called for is now installed in ARD-0001's egress section.
+
 ### 5. Audience-specific credentials are a secret-URI concern, not a guardrails concern
 
 Three audiences for the same Shopify theme profile:

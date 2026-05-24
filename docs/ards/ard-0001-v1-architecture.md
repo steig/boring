@@ -61,10 +61,12 @@ Two phases produced this design:
 - `public` → raw restore.
 
 ### Security — egress
+> **Deferral reframed by [ARD-0005](ard-0005-security-model-inversion.md); mechanism + ship slice now pinned by [ARD-0011](ard-0011-egress-enforcement-via-iptables.md).** v1's security thesis shifted from "contain AI from exfiltrating data" to "contain non-engineer + AI from damaging prod systems" — egress moved from v1 ship-blocker to v0.4 per [ARD-0008](ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md). The prototype question below (iptables vs. proxy sidecar) is **closed by ARD-0011**: iptables-in-container with `NET_ADMIN`-scoped capability, paired with `--learn-mode` (they ship together because enforcement without an authoring tool is unshippable).
+
 - Per-profile allowlist with conservative defaults: `api.anthropic.com`, `github.com`, `registry.npmjs.org`, `pypi.org`, `*.docker.io`, plus profile-declared APIs.
 - **Allowlists are observation-derived, not human-authored.** `boring open --learn-mode` records every outbound connection during a session and proposes a diff to `.boring/profile.yaml` on close. Humans review; humans don't guess.
 - `boring open --unsafe-network` is the loud, audit-logged escape hatch.
-- Implementation choice (container-side iptables vs. per-network proxy sidecar) deferred — prototype both against Mac+Orbstack before committing. Tracked separately.
+- ~~Implementation choice (container-side iptables vs. per-network proxy sidecar) deferred — prototype both against Mac+Orbstack before committing. Tracked separately.~~ — *closed by [ARD-0011](ard-0011-egress-enforcement-via-iptables.md): iptables-in-container wins; proxy-sidecar rejected because AI agents bypass HTTP_PROXY with one `curl --noproxy` line.*
 
 ### Security — secrets
 > **Superseded by [ARD-0002](ard-0002-dbx-as-runtime-dependency.md).** boring does **not** own a vault namespace, does **not** prompt to store anything, and does **not** extract a shared `lib/vault.sh` from dbx. It is a pure URI resolver into the user's existing stores (1Password, Keychain, dbx vault, Vault, AWS SM). See ARD-0002 for the resolver schemes, profile syntax, and rationale.
@@ -90,6 +92,7 @@ Two phases produced this design:
 ### Operability
 - **`boring doctor`** — diagnoses runtime version, keyring access, compose health, dbx auth, vault backend reachability. First-line debugging tool.
 - **Audit log** at `~/.local/share/boring/audit.log` for every sensitive-data restore (when `data_sensitivity != internal`). If a laptop walks off, you know what was on it.
+  > **Reframed by [ARD-0010](ard-0010-audit-log-and-prompt-tracing-infrastructure.md).** The single-file/restore-only design above is superseded by a FIFO + host-side collector with a tiered visibility model — security events (guardrail violations, restores, egress blocks) at `~/.local/share/boring/audit/_shared/<profile>/security.jsonl`; prompt-content events at `~/.local/share/boring/audit/<user>/<profile>/prompts.jsonl` (per-user by default, opt-in shared via `audit.prompts: shared`). The "sensitive restore" event survives as one `kind:` among several. Tamper-resistance is a v1.0 requirement, not a v2 nice-to-have.
 - **Metrics hook** — local file in v1 recording first-open duration, restore duration, failure stage. Later: optional `boring metrics push` to wherever.
 
 ## Consequences

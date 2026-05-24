@@ -7,6 +7,8 @@
 
 ## Decision
 
+> **Scope extended by [ARD-0009](ard-0009-guardrails-codegen-architecture.md) and [ARD-0010](ard-0010-audit-log-and-prompt-tracing-infrastructure.md).** The trust-anchor logic below applies to `.boring/*` (as written). It is also extended to: (a) the **generated guardrails artifacts** (pre-push hook, command wrappers, merged Claude `settings.json`) emitted by ARD-0009 codegen into a host-writes-container-reads-RO bind-mount, and (b) the **audit emit path** (`/usr/local/boring/bin/audit-emit` + the in-container Claude hooks pointing at it) from ARD-0010. Same principle, same enforcement pattern (Claude deny rules + RO bind-mount + system-wide git hook); the protected surface just grows as each codegen feature lands.
+
 `.boring/profile.yaml` (and any sibling file under `.boring/`) is the **trust anchor** for the container that the profile defines. In-container AI agents and processes must not modify it. Enforcement is layered and universal — every boring profile inherits these protections, not by opting in:
 
 1. **Claude permissions `deny`.** Container ships with `/home/dev/.claude/settings.json` containing:
