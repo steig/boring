@@ -4,6 +4,87 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+VERSION is currently `0.6.0-dev` — the code surface covers ARD-0008's v0.3 through v0.6 slices; v1.0 polish (brew formula, marketing final pass, etc.) is still pending.
+
+### Added — v0.6 headless `boring run` (2026-05-24, ARD-0013)
+
+- **`boring run "<prompt>" --profile <name>`** — one-shot headless Claude invocation in a profile-scoped sandbox. Fresh container per invocation (compose project name = random suffix, torn down with `docker compose down -v` on exit). Claude prompt is the only input shape — for shell commands use `devcontainer exec` directly. Same secret-resolution code path as `boring open`; CI environment is responsible for non-interactive auth (e.g. `op signin --service-account-token`).
+- SIGINT trap catches Ctrl-C mid-run and tears down cleanly (one teardown only — trap resets on first fire).
+- `tests/smoke_run.sh` — 18 assertions covering happy path, secret pre-flight failure, SIGINT teardown, `--profile` validation, no-secrets profile, `--help`.
+
+### Added — v0.5 dbx restore integration, boring side (2026-05-24, ARD-0012)
+
+- **`restore:` profile schema** — structured list of `{source, target, transform?, when?}` entries.
+  - `target` is cross-referenced against `services:` (fails validation if it names a non-existent sidecar).
+  - `transform` is REQUIRED when `data_sensitivity: sanitized` per ARD-0012's safety interlock (the field that's been parsed-but-no-op since v0.2 now becomes load-bearing).
+  - `when` is one of `first_up | every_up | manual`; defaults to `first_up`.
+  - Profile-level: `restore:` is rejected when `data_sensitivity: internal` (the meaning of "internal" is "no real data ever in this container").
+- **`_cmd_open_run_restores`** fires between `devcontainer up` and `setup:` so migrations/seeds run against prod-shaped data, not against an empty schema. Walks the restore list, invokes `dbx restore <source> [--transform=<path>] --into <container>` (container name resolved as `<profile>-<target>-1` via the now-pinned compose project name).
+- **`boring restore [<path>] [--refresh]`** subcommand — manual surface over the same pipeline. Idempotent by default (re-runs only entries missing their marker); `--refresh` clears markers and promotes `manual:` entries to `every_up` so they fire on demand.
+- **Compose project name pinned to the profile name** (`compose_generate ... --project-name "$name"` in `cmd_open`) so sidecar containers get predictable names rather than the unpredictable `devcontainer-<service>-1` default.
+- **`boring doctor` pre-flights `dbx restore --help`** for `--transform` and `--into`; warns explicitly when missing rather than failing mid-`boring open`. Requires dbx ≥ commit `d1f585d` (PR #42 on dbx).
+- Marker files at `~/.local/share/boring/restore-state/<profile>/<idx>-<target>.complete`.
+
+### Added — v0.4 egress enforcement + cross-platform `--learn-mode` (2026-05-23/24, ARD-0011 + ARD-0015)
+
+- **iptables-in-container egress enforcement** with `CAP_NET_ADMIN` (not `--privileged`). `install-egress` runs as root at container boot, installs OUTPUT rules from the bind-mounted allowlist file, then drops to the `dev` user via `gosu` before execing user code. `enforce` mode default; `BORING_EGRESS_MODE=learn` swaps `REJECT` for `NFLOG`.
+- **`boring open --learn-mode`** records every outbound connection attempt and prints a proposed `egress.allow:` diff on Ctrl-C — the authoring path that makes the allowlist tractable.
+- **`ulogd2` sidecar (ARD-0015)** replaces the original dmesg-based learn-mode reader. New `templates/_common/egress-logger/` ships a Debian-slim sidecar with ulogd2 + JSON output plugin; shares the dev container's netns via `network_mode: "service:dev"`; reads NFLOG packets and writes JSON to a host-bind-mounted shared volume that boring's `egress_propose_allowlist_diff` parses. **Works on Mac+Orbstack, which the dmesg path could not** — the dogfood team's daily platform.
+- **`lib/egress.sh`** completed (was a stub since v0.1). New host-side functions: `egress_enabled`, `egress_write_allowlist_file`, `egress_propose_allowlist_diff`.
+- Egress allowlist file lives at `<repo>/.devcontainer/boring-runtime/egress.allow`; host writes, container reads RO.
+- All five presets ship with `iptables`, `iproute2`, `gosu`, `dnsutils` and the `install-egress` entrypoint chain (`tini -- install-egress`).
+
+### Added — v0.3 trust + observability layer (2026-05-23/24, ARD-0009 + ARD-0010)
+
+- **Guardrails codegen (ARD-0009).** Three artifacts generated host-side at `boring open` time and bind-mounted RO into the container at `/workspace/.devcontainer/boring-runtime/`:
+  - `pre-push` hook from `guardrails.forbid_branches:` — refuses pushes whose target ref matches a forbidden branch. Repointed `core.hooksPath` from `/etc/boring/git-hooks/` to the bind-mount so the runtime version wins.
+  - `bin/<cmd>` wrappers from `guardrails.forbid_commands:` — earlier on PATH than the real binary; prefix-matches argv against the forbidden patterns; passes through to the real binary on no-match.
+  - `claude/settings.json` from `guardrails.allowed_claude_tools:` — `jq` deep-merge of the image-baked baseline (ARD-0006 deny rules + ARD-0010 audit hooks) with the per-profile `permissions.allow` list. In-container `~/.claude/settings.json` symlinks to the merged file.
+- **Audit log + prompt tracing (ARD-0010).** FIFO + host-side collector for tamper-resistant emit:
+  - Per-profile FIFO at `~/.local/share/boring/audit/<profile>/events.fifo`, bind-mounted into the container at `/var/log/boring/events.fifo`.
+  - Collector spawned by `cmd_open`; reads events and routes to per-tier JSONL files. Lifecycle traps (INT/TERM/EXIT) ensure no orphaned collectors.
+  - **Tiered visibility (ARD-0010 §C22).** Security events (`guardrail_violation`, `egress_block`, `restore`, `command_wrapper_fired`) → `_shared/<profile>/security.jsonl` (profile-wide). Prompt events (`prompt_issued`, `tool_used`, `prompt_completed`) → per-user `<USER>/<profile>/prompts.jsonl` by default; opt-in `audit.prompts: shared` routes to the shared file.
+  - **Claude Code native hooks** (`UserPromptSubmit`, `PostToolUse`, `Stop`) wired in the image-baked `settings.json` to invoke `audit-emit-<kind>` shims; the shims write JSON envelopes through the FIFO.
+  - **`boring audit security <profile>` / `boring audit prompts <profile>`** subcommands.
+  - **Trust-anchor extended** (ARD-0006 + derived requirements): Claude `deny` rules now cover `/workspace/.devcontainer/boring-runtime/**` and `/home/dev/.claude/settings.json` so an in-container agent can't disable its own observability.
+- **`audit-emit` shim moved from image-baked → host-emitted RO bind-mount** (fix in `dcce24f`). The original v0.3-dev shipped the script at `/usr/local/boring/bin/audit-emit` in the container's writable layer, where `sudo rm` could disable it. Moved to `/workspace/.devcontainer/boring-runtime/bin/audit-emit{,-<kind>}` so the docker daemon (not file perms) enforces immutability — same trust-anchor pattern as ARD-0006/0009.
+- **Five v1.0 presets aligned with full v0.3 wiring** (`f4045a1`): `python`, `node`, `node-postgres` were authored before ARD-0009/0010/0011 and got none of the trust+audit+egress hooks; backported. All five now share the same: iptables/gosu/dnsutils apt installs, `/var/log/boring` FIFO mount target, `core.hooksPath` repoint, PATH prepend for `boring-runtime/bin`, settings.json symlink swap, `install-egress` entrypoint chain, removed `USER dev` (install-egress drops via gosu).
+
+### Added — infrastructure (2026-05-23/24)
+
+- **`scripts/deploy-site.sh`** — push `docs/index.html` to MinIO at `s3.steig.io/public/boring/`. Idempotent; verifies live response after upload.
+- **`scripts/test.sh`** — unified smoke test runner. Discovers `smoke*.sh` / `test*.sh` under `scripts/` (excluding non-test scripts like `deploy-site.sh`) and any `*.sh` under `tests/`. Per-test PASS/FAIL/SKIP (exit 77 = skip per autoconf convention). `-v` for inline output; positional arg filters by path substring. 5/5 smoke tests pass locally.
+- **`.github/workflows/test.yml`** — CI runs on push + PR to main. `syntax` job runs `bash -n` on every shell file + advisory `shellcheck`. `smoke` job installs `jq` + mikefarah/yq + `@devcontainers/cli`, runs `boring doctor` (warns on missing optional deps like `dbx`), then `scripts/test.sh -v`.
+
+### Added — ARDs landed in this session
+
+- [ARD-0007](docs/ards/ard-0007-django-node-and-multi-service-compose.md) — django-node preset, multi-service compose, schema versioning (covered in v0.2 entry below)
+- [ARD-0008](docs/ards/ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md) — v0.3→v1.0 release plan + thesis evolution (code as thinking medium for mixed teams)
+- [ARD-0009](docs/ards/ard-0009-guardrails-codegen-architecture.md) — guardrails codegen architecture
+- [ARD-0010](docs/ards/ard-0010-audit-log-and-prompt-tracing-infrastructure.md) — audit log + prompt tracing (FIFO + host collector, Claude native hooks, tiered visibility)
+- [ARD-0011](docs/ards/ard-0011-egress-enforcement-via-iptables.md) — iptables egress + `--learn-mode`
+- [ARD-0012](docs/ards/ard-0012-dbx-restore-integration.md) — dbx restore via the `restore:` profile field
+- [ARD-0013](docs/ards/ard-0013-headless-boring-run.md) — headless `boring run`
+- [ARD-0014](docs/ards/ard-0014-preset-versioning-and-v10-preset-list.md) — preset versioning + canonical v1.0 preset list
+- [ARD-0015](docs/ards/ard-0015-ulogd2-sidecar-for-cross-platform-learn-mode.md) — ulogd2 sidecar (amends ARD-0011's dmesg log source)
+
+### Changed
+
+- **Schema versioning + soft deprecations** (ARD-0007 mechanism). `theme:` → `preset:` rename ships as a soft deprecation: both keys parse, `theme:` warns and rewrites in-memory, v2 will hard-remove. Same mechanism handles every future rename.
+- **All five presets versioned via build ARGs** (ARD-0014). Profile `preset_version: { python: "3.12", node: "22" }` translates to `--build-arg PYTHON_VERSION=3.12 ...`; defaults baked into each Dockerfile.
+- **Compose project name pinned to the profile name** in `cmd_open` (was previously the unpredictable `devcontainer` default from the `.devcontainer/` directory). Sidecar containers now get predictable names like `<profile>-<service>-1`.
+- **Marketing site rewritten for the thesis pivot** (`docs/index.html`, commit `8bb7ce7`). Was "AI safely working on prod-shape data"; now "code as a thinking medium for mixed teams (engineers + marketers + managers)." Phased capabilities grid (today / v0.3 / v0.4 / v0.5 / v0.6 / v1.0) replaces the binary today/roadmap split.
+
+### Fixed
+
+- **`audit-emit` script location** (`dcce24f`). Originally shipped in the container's writable layer where `sudo rm` could disable audit; moved to the same host-writes-container-reads-RO bind-mount the rest of the trust anchor uses.
+- **bash 3.2 compat in `boring`** (`fb0a2c4` + earlier audit fixes). Removed namerefs (used a documented global instead), used the `${arr[@]+"${arr[@]}"}` empty-array splat idiom, replaced `((c++))` with `c=$((c + 1))` (the `++` form returns nonzero on `c=0` which `set -e` treats as failure).
+- **`local bad` shadowing in `_profile_validate_json`** — `bad` was used without `local` before being redeclared later. Fixed.
+- **`cd frontend && npm install` in setup chains** — the cwd persisted across the joined shell expression, breaking later commands. Subshelled `(cd frontend && npm install)` in the dogfood profile; documented as a `setup:` ergonomics note.
+- **Stale dmesg-based egress smoke** removed (`4f09100`); replaced by `scripts/smoke-ard-0015.sh` exercising the ulogd2 path.
+
+## [0.2.0-dev] — 2026-05-23
+
 ### Added (django-node + multi-service compose — 2026-05-23, v0.2 slice)
 
 - **[ARD-0007](docs/ards/ard-0007-django-node-and-multi-service-compose.md)** — `preset: django-node`, multi-service compose, schema versioning, lifecycle hooks, secret resolution at container start. Amends ARD-0004's implementation order step #8.
