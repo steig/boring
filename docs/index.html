@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>boring — give your team the power to ship</title>
-<meta name="description" content="boring is a CLI that turns any repo into a one-command, isolated dev environment with real-shape data. Built for teams who want non-engineers to ship safely." />
+<title>boring — code as a thinking medium</title>
+<meta name="description" content="boring is a CLI that turns any repo into a one-command, isolated dev environment where mixed teams — engineers, marketers, managers — use code as a thinking medium. Wireframes, mockups, prototypes, pitches, with AI as the collaborator." />
 <style>
   :root {
     --bg: #0e0f12;
@@ -280,261 +280,419 @@
 
   <header class="hero">
     <div class="brand"><span class="dot"></span> boring</div>
-    <h1>Give your team the power to <span class="accent">ship</span>.</h1>
+    <h1>Code is a <span class="accent">thinking medium</span>.</h1>
     <p class="lede">
-      boring turns any repo into a one-command, isolated dev environment with real-shape data and an AI pair already at the keyboard. So your PM, your designer, your friend with the great idea, and your tech lead can all build in the same codebase &mdash; without anyone touching Docker.
+      boring turns any repo into a shared scratch pad your whole team can think inside &mdash; engineers, marketers, managers, the person with the great idea. Open the container, prompt Claude, and turn &ldquo;what if the buying-guide page had inline product comparisons?&rdquo; into a working visual you can put on a screen in a meeting. The output isn&rsquo;t always a mergeable PR. Sometimes it&rsquo;s a wireframe. A mockup. A pitch.
     </p>
     <div class="cta-row">
-      <span class="pill accent">v0.1 &mdash; Shopify themes shipping today</span>
-      <span class="pill">Validated on a production Shopify theme</span>
+      <span class="pill accent">v0.3 in progress &mdash; v1.0 ~3-4 months out</span>
+      <span class="pill">Profile-driven dev containers for any stack</span>
+      <span class="pill">Claude inside the box, audit-logged</span>
       <span class="pill">macOS &middot; Linux</span>
     </div>
+    <p class="lede" style="margin-top: 20px; font-size: 16px;">
+      <em>This is the thesis &mdash; not yet validated by external users. Tom is the only user today. Validated on a production Shopify theme and a Django + React + Postgres app: same schema, same single command, two unrelated stacks.</em>
+    </p>
   </header>
 
   <section>
-    <h2><span class="sub">The problem</span>Ideas die in the setup.</h2>
+    <h2><span class="sub">The problem</span>Mixed teams can&rsquo;t think in code together.</h2>
     <p class="lead">
-      Every non-engineer with an idea hits the same wall: "clone the repo, install Postgres, configure your env, get the API keys, restore a backup, install Redis, hope it works." Half give up. The other half ship something that barely runs on one laptop. Meanwhile your engineers spend Tuesdays debugging someone else's local environment instead of building.
+      A marketer has an idea for the buying-guide page. A PM wants to sketch a new checkout flow. A founder wants to show investors what the v2 dashboard could look like. The fastest path from idea to &ldquo;here&rsquo;s a working draft&rdquo; runs straight through the codebase &mdash; but the codebase is locked behind &ldquo;clone the repo, install Postgres, configure your env, get the API keys, restore a backup, install Redis, hope it works.&rdquo;
     </p>
     <p class="lead">
-      boring removes the wall. One command. Isolated container. Realistic data. AI assistant ready. Same shape on every laptop, every time.
+      So instead the team mocks it up in Figma, writes it up in a doc, argues about it in Slack, and an engineer eventually builds something that&rsquo;s close to the intent but not quite. Two weeks have passed. The idea got smaller along the way.
+    </p>
+    <p class="lead">
+      boring closes that gap. One command opens an isolated container with the real app, real-shape data, and Claude already at the keyboard. The marketer prompts the change. The page renders. The screenshot goes in the deck. The engineer reviews it Monday.
     </p>
   </section>
 
   <section>
-    <h2><span class="sub">How it works</span>From <code>git clone</code> to a working dev loop in six steps.</h2>
+    <h2><span class="sub">How it works</span>The same six steps for any stack.</h2>
     <p class="lead">
-      Here&rsquo;s the actual walkthrough from the v0.1 dogfood against <code>a production Shopify theme</code> &mdash; no fictional examples.
+      Whether the repo is a Shopify theme, a Django + React app, a Next.js + Mongo project, a FastAPI service, or a polyglot data pipeline, the loop is the same. Every field in the profile maps to a docker-compose or devcontainer primitive &mdash; boring is glue, not magic.
     </p>
     <ol class="steps">
       <li>
-        <strong>Install boring + dependencies (one-time per machine).</strong>
-        <span><code>brew install devcontainer</code>, install Orbstack or Docker Desktop, install boring (curl install when the repo is public; clone-and-PATH for now). <code>boring doctor</code> reports any gaps.</span>
+        <strong>Install once.</strong>
+        <span><code>brew install devcontainer jq yq</code>, install Orbstack or Docker Desktop, install boring via the curl one-liner. <code>boring doctor</code> tells you what&rsquo;s missing &mdash; including which optional secret-resolver CLIs (<code>op</code>, <code>vault</code>, <code>security</code>, <code>aws</code>) your profile happens to need, written in language that means something to a non-engineer.</span>
       </li>
       <li>
         <strong>Drop a profile into the repo.</strong>
-        <span><code>.boring/profile.yaml</code> declares <code>theme: shopify</code>, the mounts to share host CLI auth, ports to forward, and any per-project env. About 30 lines. Reviewable in a PR.</span>
+        <span><code>.boring/profile.yaml</code> declares: the base image (a curated preset, or your own <code>stack.dockerfile:</code>), any sidecars (<code>services:</code> &mdash; postgres, redis, mongo, kafka, anything compose accepts), any host mounts, any forwarded ports, any env, any secret URIs, any first-run setup commands, any guardrails. Use as few fields as your project needs. Reviewable in a PR.</span>
       </li>
       <li>
         <strong>Open it.</strong>
-        <span><code>boring open .</code> parses the profile, generates <code>.devcontainer/docker-compose.yml</code> + <code>devcontainer.json</code>, and brings up a container with Node 20, Ruby 3.3, Shopify CLI, <code>gh</code>, and Claude Code preinstalled. First run ~60s; reopens ~5s.</span>
+        <span><code>boring open .</code> parses + validates the profile, resolves <code>secret://</code> URIs from your existing store <em>in memory</em>, generates <code>.devcontainer/docker-compose.yml</code> (with healthcheck-aware <code>depends_on</code> auto-wired between sidecars and the dev service), and brings everything up via the standard devcontainer CLI.</span>
       </li>
       <li>
-        <strong>Authenticate, once.</strong>
-        <span>Inside the container: <code>shopify auth login</code> uses the device-code flow &mdash; the CLI prints a URL, you open it in your host browser, approve. Tokens persist to your host via the bind-mount.</span>
+        <strong>Setup runs once, automatically.</strong>
+        <span>Any <code>setup:</code> commands (migrations, dependency installs, seeding, build steps &mdash; anything your project needs on first up) run after sidecars report healthy. boring writes a success marker; if it&rsquo;s missing post-up, boring re-runs the chain. Belt-and-suspenders against the &ldquo;hook half-failed and nobody noticed&rdquo; case.</span>
       </li>
       <li>
-        <strong>Develop with hot-reload + Claude in the loop.</strong>
-        <span><code>npm run dev</code> serves the dev store at <code>localhost:9292</code> in your host browser. Edit Liquid/CSS/JS in VS Code (attached via Dev Containers extension); Claude inside the container is project-scoped &mdash; ask it to make a change, see it in the preview.</span>
+        <strong>Think in code with Claude in the loop.</strong>
+        <span>Your forwarded ports are live on <code>localhost</code>. Edit in VS Code (attached via the standard Dev Containers extension &mdash; nothing boring-specific). Claude inside the container is project-scoped: this project&rsquo;s MCP servers, this project&rsquo;s memory, this profile&rsquo;s tool allowlist. Prompt the change you want to see, take the screenshot, send it. Resolved secrets are visible to processes but never written to <code>.env</code>, the compose file, or disk.</span>
       </li>
       <li>
-        <strong>Ship.</strong>
-        <span>Commit on a feature branch inside the container, <code>gh pr create</code>. The PR lands in your repo, engineers review, your team&rsquo;s normal deploy workflow takes over.</span>
+        <strong>Decide what becomes a PR.</strong>
+        <span>Sometimes the output is a mockup that goes in a deck. Sometimes it&rsquo;s a wireframe attached to a Linear ticket. Sometimes it&rsquo;s a real branch: commit from inside the container, <code>gh pr create</code>, your engineers review. The profile is the trust anchor &mdash; in-container agents can&rsquo;t modify <code>.boring/*</code>, can&rsquo;t disable the audit hooks, can&rsquo;t push to forbidden branches.</span>
       </li>
     </ol>
     <p class="lead" style="margin-top: 24px; font-size: 15px; color: var(--fg-soft);">
-      Headless agent runs (<code>boring run &lt;profile&gt; --task &hellip;</code>) and `--learn-mode` egress allowlists are on the roadmap, not in v0.1.
+      Auto-clone via <code>boring open &lt;git-url&gt;</code> lands in v0.3. Headless <code>boring run &quot;&lt;claude-prompt&gt;&quot; --profile X</code> lands in v0.6 &mdash; fresh container per invocation, Claude prompts only (the shell-command equivalent is just <code>devcontainer exec</code>).
     </p>
   </section>
 
   <section>
     <h2><span class="sub">Why boring</span>The boring choices, finally.</h2>
     <p class="lead">
-      Most "make dev easier" tools cheat by skipping the hard parts &mdash; isolation, real data, secrets, network safety &mdash; and you find out at the worst possible moment. boring is built around three priorities, in this order:
+      Most &ldquo;make dev easier&rdquo; tools cheat by skipping the hard parts &mdash; isolation, real data, what the AI inside the box is actually allowed to do &mdash; and you find out at the worst possible moment. boring is built around three priorities, in this order:
     </p>
     <table class="pillars">
       <tr>
         <td>Security first</td>
         <td>
-          Per-project egress allowlists block prompt-injection exfiltration before it happens. Sensitive data restores are ephemeral and never sit on disk between sessions. Secrets live in your OS keyring (or 1Password, or Vault &mdash; pluggable). Audit log of every sensitive restore in case a laptop walks off.
+          The threat model is keeping non-engineers and AI from accidentally damaging prod systems, not preventing a malicious insider from exfiltrating data. So: secrets live in your existing store (1Password, Keychain, Vault, AWS Secrets Manager, dbx vault) and are resolved at container start &mdash; never written to disk. The profile is the trust anchor: in-container agents can&rsquo;t modify <code>.boring/*</code>, <code>~/.claude/settings.json</code>, or the audit-hook scripts (Claude deny rules + system-wide git pre-commit hook). Guardrail codegen lands in v0.3 (<a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0009-guardrails-codegen-architecture.md">ARD-0009</a>); egress allowlist enforcement lands in v0.4 with <code>--learn-mode</code> for authoring it (<a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0011-egress-enforcement-via-iptables.md">ARD-0011</a>). Framing: <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0005-security-model-inversion.md">ARD-0005</a>.
         </td>
       </tr>
       <tr>
         <td>Practicality second</td>
         <td>
-          One CLI. Stateless. Compose sidecars under the hood (boring-supported, not boring-customized). The profile lives in your repo as <code>.boring/profile.yaml</code> &mdash; reviewable in a PR, versioned with your code, the single source of truth. No drift across teammates' laptops.
+          One CLI. Stateless. Compose sidecars under the hood &mdash; standard <code>docker compose</code>, not a custom runtime. The profile lives in your repo as <code>.boring/profile.yaml</code> &mdash; reviewable in a PR, versioned with your code, the single source of truth. No drift across teammates&rsquo; laptops. Output is a standard <code>devcontainer.json</code> &mdash; teammates who don&rsquo;t install boring still get a working dev container via VS Code or Codespaces.
         </td>
       </tr>
       <tr>
-        <td>Speed third</td>
+        <td>Quality over speed</td>
         <td>
-          First open in ~90 seconds. Subsequent opens in ~5 seconds. Container stays warm. Source code lives in a bind-mount so host-side and container-side <code>git</code> are the same git. Orbstack on Mac means near-native file performance.
+          &ldquo;I want this to just work&rdquo; is the bar. First open ~60-120 seconds depending on the preset and sidecar set. Subsequent opens in ~5 seconds &mdash; container stays warm. Tom personally helps team members install during the early adoption phase; the goal is &ldquo;you don&rsquo;t notice the tool, you notice that the thing you wanted to try works.&rdquo; Source code lives in a bind-mount so host-side and container-side <code>git</code> are the same git. Orbstack on Mac means near-native file performance.
         </td>
       </tr>
     </table>
   </section>
 
   <section>
-    <h2><span class="sub">For your team</span>Built for the people who actually have to use it.</h2>
+    <h2><span class="sub">Under the hood</span>Design calls worth explaining.</h2>
+    <p class="lead">
+      Every interesting decision is recorded as an ARD in the repo. The seven below are the ones that drive the daily experience.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <div class="kicker">Presets are polyglot, not per-technology</div>
+        <p style="margin-bottom: 12px;"><code>preset: django-node</code> &mdash; one curated image with Python <em>and</em> Node, not two presets you stitch together. Because <code>FROM</code> picks one base image: you can&rsquo;t merge a <code>django</code> Dockerfile and a <code>node</code> Dockerfile into a third one cleanly.</p>
+        <p>So the unit is &ldquo;kind of project,&rdquo; not &ldquo;tool.&rdquo; v1.0 ships five: <code>python</code>, <code>node</code>, <code>node-postgres</code>, <code>django-node</code>, <code>shopify</code>. Each is one directory under <code>templates/</code>: Dockerfile, README, defaults. Versions are parameterized via build ARGs + a <code>preset_version:</code> map. <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0007-django-node-and-multi-service-compose.md">ARD-0007</a> + <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0014-preset-versioning-and-v10-preset-list.md">ARD-0014</a>.</p>
+      </div>
+      <div class="card">
+        <div class="kicker">Secrets never touch disk</div>
+        <p style="margin-bottom: 12px;">The profile declares URIs: <code>OPENROUTER_API_KEY: secret://op://Lamps/&hellip;</code>. At container-start time, boring shells out to <code>op read</code> (or <code>security find-generic-password</code>, or <code>vault kv get</code>, etc.), captures the value in memory, and passes it to <code>devcontainer up --remote-env KEY=VALUE</code>.</p>
+        <p>Resolved values are never written to <code>docker-compose.yml</code> or <code>devcontainer.json</code> &mdash; even though those files are gitignored. On-disk secrets are a backup-and-sync exfil channel boring won&rsquo;t open. <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0002-dbx-as-runtime-dependency.md">ARD-0002</a>.</p>
+      </div>
+      <div class="card">
+        <div class="kicker">Profile schema is versioned</div>
+        <p style="margin-bottom: 12px;">Every profile declares <code>profile_version: "1"</code>. Missing &rarr; warning. Unknown future version &rarr; hard error with an upgrade hint. Major-only (no semver) so the cognitive cost is small.</p>
+        <p>A deprecation table in <code>lib/profile.sh</code> handles renames as soft deprecations: <code>theme:</code> &rarr; <code>preset:</code> warns and rewrites in-memory, today. v2 will hard-remove. Renames never break anyone&rsquo;s in-the-wild profile. <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0007-django-node-and-multi-service-compose.md">ARD-0007</a>.</p>
+      </div>
+      <div class="card">
+        <div class="kicker">Lifecycle hooks are belt-and-suspenders</div>
+        <p style="margin-bottom: 12px;"><code>setup:</code> &rarr; emitted as <code>postCreateCommand</code> in <code>devcontainer.json</code>. Devcontainer-native: fires for <code>boring open</code> <em>and</em> for VS Code &ldquo;Reopen in Container.&rdquo; The chain writes <code>/var/lib/boring/setup-complete</code> on success.</p>
+        <p><code>boring open</code> re-verifies that marker after <code>devcontainer up</code> returns. If it&rsquo;s missing (the failure mode where <code>bootstrap_data</code> raced the Postgres healthcheck and exited 1), boring re-runs the chain via <code>devcontainer exec</code>. Silence isn&rsquo;t success. <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0007-django-node-and-multi-service-compose.md">ARD-0007</a>.</p>
+      </div>
+      <div class="card">
+        <div class="kicker">The profile is the trust anchor</div>
+        <p style="margin-bottom: 12px;"><code>.boring/profile.yaml</code> defines what the container is allowed to do: mounts, ports, secret URIs, allowed Claude tools, branch guardrails, audit visibility. So the in-container agent must not be allowed to edit it &mdash; or the audit hooks, or its own settings. Same principle as Kubernetes RBAC or AWS IAM: the policy is not modifiable by the actor.</p>
+        <p>Enforced two ways: Claude Code <code>deny</code> rules covering <code>/workspace/.boring/**</code>, <code>~/.claude/settings.json</code>, and the audit-hook scripts &mdash; plus a system-wide git pre-commit hook (<code>core.hooksPath /etc/boring/git-hooks</code>) that refuses commits touching any of them. Holds even when the agent is jailbroken. <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0006-profile-is-the-trust-anchor.md">ARD-0006</a> (extended by <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0009-guardrails-codegen-architecture.md">ARD-0009</a> + <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0010-audit-log-and-prompt-tracing-infrastructure.md">ARD-0010</a>).</p>
+      </div>
+      <div class="card">
+        <div class="kicker">Audit + prompt tracing built in</div>
+        <p style="margin-bottom: 12px;">Every guardrail violation, restore, and egress block writes to a FIFO that a host-side collector drains and persists tamper-resistant. Security events are profile-shared and always logged &mdash; the team sees what the team did.</p>
+        <p>Prompt content is per-user by default (engineers see only their own prompts) with an opt-in <code>audit.prompts: shared</code> for team-learning use cases. Wired through Claude&rsquo;s native hooks; the in-container agent can&rsquo;t disable it because the hook scripts are write-protected. Lands in v0.3. <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0010-audit-log-and-prompt-tracing-infrastructure.md">ARD-0010</a>.</p>
+      </div>
+      <div class="card">
+        <div class="kicker">Compose existing tools; reimplement nothing</div>
+        <p style="margin-bottom: 12px;">boring is glue. <a href="https://github.com/steig/dbx"><code>dbx</code></a> for backups and the vault. <a href="https://github.com/devcontainers/cli"><code>@devcontainers/cli</code></a> for container lifecycle. <code>docker compose</code> for sidecars. <code>op</code>, <code>security</code>, <code>vault</code>, <code>aws secretsmanager</code> for secret resolution. Claude Code for the in-box agent.</p>
+        <p>boring owns zero secret storage. boring runs no container loop. boring doesn&rsquo;t reimplement anyone else&rsquo;s tool. When dbx fixes a Postgres regression, boring users benefit by upgrading dbx &mdash; no boring release needed.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="sub">For your team</span>The collaborative scratch pad.</h2>
+    <p class="lead">
+      boring is built for <em>mixed</em> teams &mdash; the engineer, the marketer, the manager, and the founder sitting at the same codebase, using code as a thinking medium together. The container is shared, the AI is shared, the conversation is shared. What anyone ships out of it is up to them.
+    </p>
     <div class="audience">
       <div class="card">
+        <div class="who">Marketers &middot; content leads</div>
+        <h3>Sketch the page change directly.</h3>
+        <p>You don&rsquo;t need to know what Postgres is. <code>boring open</code> the shop, prompt Claude with &ldquo;add inline product comparisons to the buying-guide template,&rdquo; reload the preview, screenshot the result. Drop it in the doc you were going to write anyway &mdash; only now it&rsquo;s a real page, not a Figma frame.</p>
+      </div>
+      <div class="card">
         <div class="who">PMs &middot; designers &middot; founders</div>
-        <h3>Build the prototype yourself.</h3>
-        <p>You don't need to know what Postgres is, or what a port is. <code>boring open</code> the repo and start prompting Claude. The data shape is real. Your "what if it looked like this" turns into a branch your engineer can review on Monday.</p>
+        <h3>Pitch with a working draft, not a mockup.</h3>
+        <p>Wireframes are persuasion theater. A working version of your idea, running with the real-shape data, navigable in a browser, is the actual thing. Build it in an afternoon, show it on Monday, decide whether to invest the eng cycles for real. Skip the &ldquo;is this what you meant?&rdquo; loop.</p>
       </div>
       <div class="card">
         <div class="who">Tech leads</div>
         <h3>Stop being the dev environment helpdesk.</h3>
-        <p>One profile in the repo replaces twelve Notion pages, four Slack threads, and the recurring "how do I run this locally" interrupt. New hires onboard in one command. The dev environment is a PR like anything else.</p>
+        <p>One profile in the repo replaces twelve Notion pages, four Slack threads, and the recurring &ldquo;how do I run this locally&rdquo; interrupt. The non-engineers on your team can think in code without breaking anything &mdash; agents are sandboxed, branches are gated, audit logs are tamper-resistant. The dev environment is a PR like anything else.</p>
       </div>
       <div class="card">
-        <div class="who">Backend teams</div>
-        <h3>Real-shape data, zero blast radius.</h3>
-        <p>Sanitized prod restores into ephemeral containers. Egress controlled per project. Claude's tool scope and MCP servers are per-profile, so the bot working on <code>auth-service</code> can't see <code>billing-service</code> memory.</p>
-      </div>
-      <div class="card">
-        <div class="who">Solo founders &middot; friends</div>
-        <h3>Send the profile, get a collaborator.</h3>
-        <p>Share the repo, share the wins. Your friend with the idea opens your app on their laptop in 90 seconds, with realistic data, in a sandbox they can't break. They ship a small thing. You merge it. They feel powerful. You keep shipping.</p>
+        <div class="who">Engineers on mixed teams</div>
+        <h3>Reviewable artifacts instead of vibes.</h3>
+        <p>When the marketer says &ldquo;I want this,&rdquo; they hand you a branch and a screenshot of the rendered result, not a paragraph. The data shape is real. The change actually works in the container. You decide whether it&rsquo;s mergeable as-is, needs tightening, or was a useful prototype to throw away. Either way, the conversation skips three meetings.</p>
       </div>
     </div>
   </section>
 
   <section>
-    <h2><span class="sub">Anatomy of a profile</span>.boring/profile.yaml</h2>
+    <h2><span class="sub">Anatomy of a profile</span>.boring/profile.yaml &mdash; every field, what it unlocks.</h2>
     <p class="lead">
-      Everything boring needs to recreate the dev environment lives in one file. Below is the actual v0.1 profile shipping for <code>a production Shopify theme</code> &mdash; this is what runs, not a marketing mockup.
+      Use as many or as few fields as your project needs. Each field maps to a docker-compose or devcontainer primitive &mdash; no boring-specific magic, no &ldquo;configuration as code&rdquo; framework to learn. Empty fields are fine. Omit fields entirely when they don&rsquo;t apply.
     </p>
 <pre><span class="c"># .boring/profile.yaml</span>
-<span class="a">name</span>: my-shopify-theme
-<span class="a">theme</span>: shopify           <span class="c"># picks the Shopify Dockerfile preset + egress defaults</span>
+<span class="a">profile_version</span>: "1"           <span class="c"># schema version; missing → warn, unknown → error w/ upgrade hint</span>
+<span class="a">name</span>: your-app                 <span class="c"># slug; becomes the compose project name</span>
 
-<span class="a">services</span>: []              <span class="c"># Shopify hosts the data; no sidecars in v0.1</span>
+<span class="c"># --- Base image: pick ONE of three paths ---</span>
+<span class="a">preset</span>: django-node            <span class="c"># curated preset; v1.0 ships: python, node, node-postgres, django-node, shopify</span>
+<span class="a">preset_version</span>:                 <span class="c"># override the preset's default language versions (build ARGs)</span>
+  <span class="a">python</span>: "3.12"                <span class="c">#   default is 3.14; pin per-project as needed</span>
+  <span class="a">node</span>: "20"                     <span class="c">#   default is 20; bump per-project as needed</span>
+<span class="c"># OR:</span>
+<span class="c"># stack:</span>
+<span class="c">#   dockerfile: ./Dockerfile.dev   # YOUR Dockerfile, anywhere in the repo</span>
+<span class="c"># OR:</span>
+<span class="c">#   base_image: node:20-bookworm-slim   # an existing registry image, no build</span>
 
-<span class="c"># Share host CLI auth into the container. RW so `shopify auth login`</span>
-<span class="c"># and `gh` can persist tokens back to the host.</span>
+<span class="c"># --- Sidecars: any image compose accepts ---</span>
+<span class="a">services</span>:
+  - <span class="a">name</span>: postgres                       <span class="c"># compose service name + DNS hostname on the network</span>
+    <span class="a">image</span>: postgres:17
+    <span class="a">env</span>: { <span class="a">POSTGRES_DB</span>: app, <span class="a">POSTGRES_PASSWORD</span>: dev }
+    <span class="a">volumes</span>: [postgres-data:/var/lib/postgresql/data]
+    <span class="a">healthcheck</span>: { <span class="a">test</span>: ["CMD", "pg_isready", "-U", "postgres"], <span class="a">interval</span>: 5s }
+  - <span class="a">name</span>: redis
+    <span class="a">image</span>: redis:7
+  <span class="c"># … or mongo, mysql, kafka, clickhouse, minio — anything in a registry.</span>
+  <span class="c"># dev.depends_on is auto-wired: service_healthy when there's a healthcheck,</span>
+  <span class="c"># service_started otherwise.</span>
+
+<span class="a">volumes</span>: [postgres-data]                  <span class="c"># top-level named volumes (referenced by services[].volumes)</span>
+
+<span class="c"># --- Mounts: share host dirs into the container ---</span>
 <span class="a">mounts</span>:
-  - ~/.config/shopify:/home/dev/.config/shopify
-  - ~/.config/gh:/home/dev/.config/gh
+  - ~/.config/gh:/home/dev/.config/gh         <span class="c"># for browser-OAuth tools (gh, shopify, gcloud, firebase, …)</span>
+  - ~/.aws:/home/dev/.aws:ro                  <span class="c"># :ro is supported</span>
 
-<span class="c"># 9292 = `shopify theme dev` hot-reload; 3456 = OAuth callback (if used)</span>
-<span class="a">forward_ports</span>: [9292, 3456]
+<span class="c"># --- Ports: simple integer list, forwarded host↔container ---</span>
+<span class="a">forward_ports</span>: [8000, 5173]
 
+<span class="c"># --- Env: literal values + secret URIs side by side ---</span>
 <span class="a">env</span>:
-  <span class="a">SHOPIFY_STORE</span>: your-dev-store
-  <span class="a">SHOPIFY_FLAG_STORE</span>: your-dev-store    <span class="c"># both names: npm scripts + CLI native</span>
+  <span class="a">DJANGO_DEBUG</span>: "True"                     <span class="c"># literal — written to compose's environment block</span>
 
-<span class="c"># Per ARD-0005, in-container guardrails refuse pushes that would touch prod.</span>
-<span class="c"># Codegen of pre-push hooks + command wrappers ships in the next slice;</span>
-<span class="c"># the schema is parsed today.</span>
+  <span class="c"># Secrets — resolved at container start, never written to disk.</span>
+  <span class="c"># SEVEN URI schemes; pick whichever matches your team's secret store.</span>
+  <span class="a">OPENROUTER_API_KEY</span>: secret://op://Personal/OpenRouter/api-key   <span class="c"># 1Password</span>
+  <span class="a">STRIPE_KEY</span>:         secret://keychain:com.stripe/test-key      <span class="c"># macOS Keychain / Linux libsecret</span>
+  <span class="a">VAULT_TOKEN</span>:        secret://vault://secret/data/app/token       <span class="c"># HashiCorp Vault</span>
+  <span class="a">AWS_API_KEY</span>:        secret://aws-sm:prod/app/api-key             <span class="c"># AWS Secrets Manager</span>
+  <span class="a">DBX_SECRET</span>:         secret://dbx-vault:app-secret                <span class="c"># dbx vault</span>
+  <span class="a">FROM_HOST_ENV</span>:      secret://env:MY_LOCAL_VAR                    <span class="c"># host env (CI escape hatch)</span>
+  <span class="a">FROM_FILE</span>:          secret://file:/run/secrets/api-key           <span class="c"># local file (Docker secrets, k8s mounts)</span>
+
+<span class="c"># --- Setup: any shell-command list, runs once after first up ---</span>
+<span class="a">setup</span>:
+  - uv sync --dev
+  - uv run python manage.py migrate
+  - (cd frontend &amp;&amp; npm install)              <span class="c"># subshelled — cd does NOT bleed into the next command</span>
+  - ./scripts/seed.sh
+
+<span class="c"># --- Guardrails (schema parsed today; codegen ships in v0.3) ---</span>
 <span class="a">guardrails</span>:
-  <span class="a">forbid_branches</span>: [main, dev-preview]
-  <span class="a">forbid_commands</span>:
-    - "gh pr merge"
-    - "shopify theme push --live"
+  <span class="a">forbid_branches</span>: [main, production]
+  <span class="a">forbid_commands</span>: ["gh pr merge", "kubectl apply"]
+  <span class="a">allowed_claude_tools</span>: [read, edit, grep, bash]
 
-<span class="a">data_sensitivity</span>: internal   <span class="c"># no DB to gate in v0.1; matters for Django (v1.x)</span></pre>
+<span class="c"># --- Audit (v0.3): tiered visibility for events vs. prompt content ---</span>
+<span class="a">audit</span>:
+  <span class="a">events</span>: shared                            <span class="c"># guardrail violations, restores, egress blocks: team-wide, always logged</span>
+  <span class="a">prompts</span>: per_user                          <span class="c"># engineers see their own prompts only; set "shared" to opt into team learning</span>
+
+<span class="c"># --- Restore (v0.5): real-shape data into sidecars, sanitized via dbx ---</span>
+<span class="a">restore</span>:                                    <span class="c"># piped through dbx restore --transform, never on disk unsanitized</span>
+  - <span class="a">source</span>: dbx://prod/app-postgres         <span class="c">#   backup to draw from</span>
+    <span class="a">target</span>: postgres                          <span class="c">#   which sidecar service to restore into</span>
+    <span class="a">transform</span>: ./scripts/sanitize.sql          <span class="c">#   the dbx --transform script that strips PII</span>
+    <span class="a">when</span>: on_first_up                          <span class="c">#   on_first_up | on_request | never</span>
+
+<span class="a">data_sensitivity</span>: internal                <span class="c"># internal | sanitized | public (gates ephemeral volumes; v0.5)</span>
+
+<span class="a">egress</span>:                                    <span class="c"># declarative today; enforcement ships v0.4 with iptables-in-container</span>
+  <span class="a">allow</span>: [api.anthropic.com, github.com, registry.npmjs.org, openrouter.ai]
+
+<span class="a">claude</span>:
+  <span class="a">mcp</span>: []                                  <span class="c"># project-scoped MCP servers (Linear, Sentry, etc.)</span></pre>
+    <p class="lead" style="margin-top: 24px; font-size: 15px; color: var(--fg-soft);">
+      Two real profiles in the wild today: a production Shopify theme (host bind-mounts for the CLI&rsquo;s OAuth tokens, no setup hooks, no sidecars) and a Django + React + Postgres app (preset + secret URIs + setup chain + sidecar). Both use the same schema above. <a href="https://github.com/steig/boring/tree/main/docs/ards">ARDs</a> for every design call.
+    </p>
   </section>
 
   <section>
     <div class="quote">
-      "The whole pitch is that the boring choices, made boringly well, are what make a team fast. We just made them defaults."
+      &ldquo;Code is the highest-resolution medium we have for thinking about software. The trick is letting the whole team think in it, not just the people who learned to clone a repo.&rdquo;
     </div>
   </section>
 
   <section>
-    <h2><span class="sub">Features</span>What ships today, what&rsquo;s next.</h2>
+    <h2><span class="sub">Capabilities</span>What boring does, what ships when.</h2>
     <p class="lead">
-      Honest tags. <span class="tag">today</span> = working in v0.1, validated end-to-end. <span class="tag" style="background: rgba(154, 160, 170, 0.12); color: var(--fg-muted);">roadmap</span> = designed, scheduled, not yet shipping.
+      Honest tags. <span class="tag">today</span> = working in the current dev build (v0.2 shipped; v0.3 in progress). <span class="tag" style="background: var(--accent-soft); color: var(--accent);">v0.3</span> through <span class="tag" style="background: var(--accent-soft); color: var(--accent);">v1.0</span> = on the roadmap below, scheduled, not yet shipping.
     </p>
     <div class="grid">
       <div class="card">
         <span class="tag">today</span>
         <div class="kicker" style="margin-top: 8px;">Profile-in-repo</div>
-        <p><code>.boring/profile.yaml</code> is the single source of truth. Sharing the profile is sharing the repo &mdash; no <code>export</code>/<code>import</code> dance, no drift across laptops. Schema validated, overlay merge for user-local overrides.</p>
+        <p><code>.boring/profile.yaml</code> is the single source of truth. Sharing the profile is sharing the repo &mdash; no <code>export</code>/<code>import</code> dance, no drift across laptops. Schema validated, overlay merge for user-local <code>profile.overlay.yaml</code> escape hatches.</p>
       </div>
       <div class="card">
         <span class="tag">today</span>
-        <div class="kicker" style="margin-top: 8px;">Theme presets</div>
-        <p><code>theme: shopify</code> selects a curated Dockerfile (Node 20, Ruby 3.3, Shopify CLI, <code>gh</code>, Claude Code) with non-root user, port-forwards, and the egress-allowlist defaults that match the tool. Django, Rails, and others land next.</p>
+        <div class="kicker" style="margin-top: 8px;">Curated presets or BYO Dockerfile</div>
+        <p>Use a preset for instant defaults, or point <code>stack.dockerfile:</code> at any Dockerfile in your repo, or set <code>stack.base_image:</code> to any registry image. v1.0 ships five presets: <code>python</code>, <code>node</code>, <code>node-postgres</code>, <code>django-node</code>, <code>shopify</code>. <code>shopify</code> and <code>django-node</code> ship today.</p>
+      </div>
+      <div class="card">
+        <span class="tag">today</span>
+        <div class="kicker" style="margin-top: 8px;">Any image as a sidecar</div>
+        <p>Postgres, Redis, MongoDB, MySQL, Kafka, ClickHouse, MinIO, Elasticsearch &mdash; if compose accepts it, boring emits it. Top-level named volumes, healthchecks, per-service env, sidecar-to-sidecar <code>depends_on</code>. <code>dev.depends_on</code> auto-wires with healthcheck-aware conditions.</p>
+      </div>
+      <div class="card">
+        <span class="tag">today</span>
+        <div class="kicker" style="margin-top: 8px;">Secrets from your existing store</div>
+        <p>Seven URI schemes: <code>op://</code>, <code>keychain:</code>, <code>vault://</code>, <code>aws-sm:</code>, <code>dbx-vault:</code>, <code>env:</code>, <code>file:</code>. Resolved at container start, passed via <code>--remote-env</code>, never written to <code>.env</code> or any generated file. boring stores nothing.</p>
+      </div>
+      <div class="card">
+        <span class="tag">today</span>
+        <div class="kicker" style="margin-top: 8px;">First-run lifecycle hooks</div>
+        <p><code>setup:</code> is any shell-command list. Migrations, dependency installs, seed data, build steps. Emitted as devcontainer&rsquo;s <code>postCreateCommand</code> (works for VS Code &ldquo;Reopen in Container&rdquo;) AND re-verified by boring via a success marker. Belt-and-suspenders.</p>
       </div>
       <div class="card">
         <span class="tag">today</span>
         <div class="kicker" style="margin-top: 8px;">Project-scoped AI</div>
-        <p>Claude lives inside the container, with project-scoped MCP servers, memory, and conversation history. A poisoned file in one project can&rsquo;t read another project&rsquo;s notes. API key resolves from your existing secret store.</p>
+        <p>Claude lives inside the container, with project-scoped MCP servers, memory, and history. A poisoned file in one project can&rsquo;t read another&rsquo;s notes. The profile is the trust anchor &mdash; in-container agents can&rsquo;t modify <code>.boring/*</code>, <code>~/.claude/settings.json</code>, or the audit-hook scripts.</p>
       </div>
       <div class="card">
         <span class="tag">today</span>
-        <div class="kicker" style="margin-top: 8px;">Pluggable secrets resolver</div>
-        <p>boring owns zero secret storage. The profile declares URIs into <em>your</em> store: <code>op://</code>, <code>keychain:</code>, <code>vault://</code>, <code>aws-sm:</code>, <code>dbx-vault:</code>, <code>env:</code>, <code>file:</code>. Resolved at container start. Nothing in <code>.env</code>. Nothing in shell history.</p>
-      </div>
-      <div class="card">
-        <span class="tag">today</span>
-        <div class="kicker" style="margin-top: 8px;"><code>boring doctor</code></div>
-        <p>One command diagnoses runtime versions, devcontainer CLI, dbx, and the optional URI-resolver tools (<code>op</code>, <code>vault</code>, <code>aws</code>, <code>security</code>, <code>secret-tool</code>). Tech leads stop being the dev-environment helpdesk.</p>
+        <div class="kicker" style="margin-top: 8px;">Schema versioning + soft deprecations</div>
+        <p><code>profile_version: "1"</code> declares the schema you authored against. Renames ship as warnings, not breaking changes; deprecated fields are rewritten in-memory. Your profile keeps working when boring evolves.</p>
       </div>
       <div class="card">
         <span class="tag">today</span>
         <div class="kicker" style="margin-top: 8px;">VS Code &amp; Codespaces compatible</div>
-        <p>Because boring generates a standard <code>devcontainer.json</code>, your team can open the project with VS Code&rsquo;s Dev Containers extension &mdash; or in GitHub Codespaces &mdash; with no boring CLI installed on their end.</p>
+        <p>boring generates a standard <code>devcontainer.json</code>. Your team can open the project with VS Code&rsquo;s Dev Containers extension &mdash; or in GitHub Codespaces &mdash; with no boring CLI installed on their end. boring is the authoring tool; devcontainer is the runtime.</p>
       </div>
       <div class="card">
-        <span class="tag" style="background: rgba(154, 160, 170, 0.12); color: var(--fg-muted);">roadmap</span>
-        <div class="kicker" style="margin-top: 8px;">Egress allowlist enforcement</div>
-        <p>Schema is parsed today; iptables-in-container vs. proxy-sidecar prototype lands in v1.x. <code>--learn-mode</code> will observe a session and propose the right allowlist based on what your app actually called.</p>
-      </div>
-      <div class="card">
-        <span class="tag" style="background: rgba(154, 160, 170, 0.12); color: var(--fg-muted);">roadmap</span>
+        <span class="tag" style="background: var(--accent-soft); color: var(--accent);">v0.3</span>
         <div class="kicker" style="margin-top: 8px;">Guardrails codegen</div>
-        <p>The <code>guardrails:</code> block (forbidden branches, forbidden commands, allowed Claude tools) is parsed today. Codegen of in-container pre-push hooks + command wrappers ships next &mdash; so accidental pushes to <code>main</code> are mechanically impossible.</p>
+        <p>The <code>guardrails:</code> block (forbidden branches, forbidden commands, allowed Claude tools) is parsed today. v0.3 codegens in-container pre-push hooks, command wrappers, and the Claude tool allowlist &mdash; so accidental pushes to <code>main</code> or invocations of <code>gh pr merge</code> are mechanically impossible.</p>
       </div>
       <div class="card">
-        <span class="tag" style="background: rgba(154, 160, 170, 0.12); color: var(--fg-muted);">roadmap</span>
-        <div class="kicker" style="margin-top: 8px;">Sidecars + dbx restore</div>
-        <p>Compose sidecars (Postgres, Redis, etc.) with <code>dbx restore</code> piping prod-shape data into a named container. Ephemeral DB volumes auto-derived from <code>data_sensitivity</code>. The Django use case.</p>
+        <span class="tag" style="background: var(--accent-soft); color: var(--accent);">v0.3</span>
+        <div class="kicker" style="margin-top: 8px;">Audit log + prompt tracing</div>
+        <p>FIFO inside the container; host-side collector drains and persists tamper-resistant. Security events (guardrail violations, restores, egress blocks) are shared and always logged. Prompt content is per-user by default; <code>audit.prompts: shared</code> opts in to team learning. Wired through Claude native hooks.</p>
       </div>
       <div class="card">
-        <span class="tag" style="background: rgba(154, 160, 170, 0.12); color: var(--fg-muted);">roadmap</span>
+        <span class="tag" style="background: var(--accent-soft); color: var(--accent);">v0.3</span>
+        <div class="kicker" style="margin-top: 8px;">curl install + public repo + URL clone</div>
+        <p>One-line install via <code>curl | bash</code>, the repo flips public (currently invite-only), and <code>boring open &lt;git-url&gt;</code> clones-and-opens in one step. Plus a non-engineer-shaped <code>boring doctor</code> that explains what&rsquo;s missing in language that means something.</p>
+      </div>
+      <div class="card">
+        <span class="tag" style="background: var(--accent-soft); color: var(--accent);">v0.4</span>
+        <div class="kicker" style="margin-top: 8px;">Egress enforcement + <code>--learn-mode</code></div>
+        <p>iptables-in-container enforcement of the <code>egress.allow:</code> list, shipped together with <code>--learn-mode</code> for observing a session and proposing the allowlist from what your app actually called. Enforcement without an authoring tool is unshippable; they ship in the same slice.</p>
+      </div>
+      <div class="card">
+        <span class="tag" style="background: var(--accent-soft); color: var(--accent);">v0.5</span>
+        <div class="kicker" style="margin-top: 8px;">dbx restore into sidecars</div>
+        <p>Sidecars today carry empty schemas seeded by your <code>setup:</code> hook. v0.5 adds the <code>restore:</code> profile field (source/target/transform/when) and pipes prod-shape data through <code>dbx restore --transform=&lt;script&gt;</code> into the running sidecar &mdash; sanitized at stream time, ephemeral, never on disk unsanitized. Pending dbx-side PRs.</p>
+      </div>
+      <div class="card">
+        <span class="tag" style="background: var(--accent-soft); color: var(--accent);">v0.6</span>
         <div class="kicker" style="margin-top: 8px;">Headless <code>boring run</code></div>
-        <p>The same container shape, invoked as a one-shot autonomous Claude task from CI, a Slack bot, or your terminal. Shares the egress allowlist, vault, and guardrails with the interactive entry point.</p>
+        <p><code>boring run &quot;&lt;claude-prompt&gt;&quot; --profile X</code> spins up a fresh container, runs Claude with the profile&rsquo;s sandbox shape, and exits. Input is a Claude prompt only &mdash; the shell-command equivalent is just <code>devcontainer exec</code>, and boring doesn&rsquo;t need to be a fancier version of that.</p>
+      </div>
+      <div class="card">
+        <span class="tag" style="background: var(--accent-soft); color: var(--accent);">v1.0</span>
+        <div class="kicker" style="margin-top: 8px;">Five-preset polish + final pass</div>
+        <p>All five presets (<code>python</code>, <code>node</code>, <code>node-postgres</code>, <code>django-node</code>, <code>shopify</code>) shipped with <code>preset_version:</code> parameterization. Marketing site final pass. The bar is &ldquo;I want this to just work.&rdquo; (<code>bun</code> as a separate opt-in preset, plus <code>brew</code>/<code>winget</code> formulas, deferred to v1.x.)</p>
       </div>
     </div>
   </section>
 
   <section>
     <h2><span class="sub">Roadmap</span>Where it goes from here.</h2>
+    <p class="lead">
+      Total calendar from here to v1.0: ~3-4 months. v0.3 lands on early team members for phased feedback; v1.0 is the public release. Full release plan + thesis evolution: <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md">ARD-0008</a>.
+    </p>
     <div class="grid">
       <div class="card">
         <span class="tag">v0.1</span>
-        <h3>Shopify themes</h3>
-        <p><strong>Shipping today.</strong> <code>boring open</code> end-to-end against <code>a production Shopify theme</code>: profile parser, compose generator, Shopify Dockerfile preset, secret URI resolver, <code>boring doctor</code>. Plumbing validated; non-engineer + Claude can iterate the theme and submit PRs.</p>
+        <h3>Single-service profiles</h3>
+        <p><strong>Shipped.</strong> Profile parser, schema validator, single-service compose, Dockerfile presets (Shopify first), secret URI resolver as a library, <code>boring doctor</code>. End-to-end validated on a production Shopify theme.</p>
+      </div>
+      <div class="card">
+        <span class="tag">v0.2</span>
+        <h3>Multi-service + secrets + lifecycle</h3>
+        <p><strong>Shipped.</strong> Multi-service compose with auto-wired sidecars, secret URI resolution at container start (in memory only), <code>setup:</code> hooks with marker verification, schema versioning + soft deprecations, second curated preset (django-node). End-to-end validated on a production Django + React + Postgres app.</p>
+      </div>
+      <div class="card">
+        <span class="tag">v0.3</span>
+        <h3>Trust + observability layer</h3>
+        <p><strong>4-6 weeks.</strong> Guardrails codegen (pre-push hook + command wrappers + Claude tool allowlist). Audit log infrastructure (FIFO + host collector, tamper-resistant). Prompt tracing via Claude native hooks. curl install one-liner. Public-repo flip. Non-engineer-shaped <code>boring doctor</code>. This marketing site rewrite. Trust + observability complete at handoff. <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0009-guardrails-codegen-architecture.md">ARD-0009</a> + <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0010-audit-log-and-prompt-tracing-infrastructure.md">ARD-0010</a>.</p>
+      </div>
+      <div class="card">
+        <span class="tag">v0.4</span>
+        <h3>Egress enforcement + <code>--learn-mode</code></h3>
+        <p><strong>2-3 weeks.</strong> iptables-in-container egress allowlist enforcement, shipped together with <code>--learn-mode</code> for proposing the right allowlist from observation. Enforcement and authoring ship together &mdash; one without the other is unshippable. <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0011-egress-enforcement-via-iptables.md">ARD-0011</a>.</p>
+      </div>
+      <div class="card">
+        <span class="tag">v0.5</span>
+        <h3>dbx restore + real-shape data</h3>
+        <p><strong>2 weeks, pending dbx-side PRs.</strong> <code>restore:</code> profile schema (source / target / transform / when). Real-shape data piped into sidecars via <code>dbx restore --transform</code> at stream time. Sanitized, ephemeral, never on disk unsanitized. <code>data_sensitivity</code> gates ephemeral volumes. <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0012-dbx-restore-integration.md">ARD-0012</a>.</p>
+      </div>
+      <div class="card">
+        <span class="tag">v0.6</span>
+        <h3>Headless <code>boring run</code></h3>
+        <p><strong>2 weeks.</strong> <code>boring run &quot;&lt;claude-prompt&gt;&quot; --profile X</code>. Fresh container per invocation. Claude prompt input only (shell-command equivalent is <code>devcontainer exec</code>, and boring isn&rsquo;t a fancier version of that). Same sandbox shape, vault, and guardrails as interactive. <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0013-headless-boring-run.md">ARD-0013</a>.</p>
       </div>
       <div class="card">
         <span class="tag">v1.0</span>
-        <h3>Django + sidecars</h3>
-        <p>The case boring was originally designed for. Compose sidecars (Postgres, Redis), <code>dbx restore --into &lt;sidecar&gt;</code>, env-var rewrites so the wrapped app talks to sidecar hostnames without editing <code>.env</code>, ephemeral DB volumes derived from <code>data_sensitivity</code>.</p>
-      </div>
-      <div class="card">
-        <span class="tag">v1.x</span>
-        <h3>Guardrails + egress</h3>
-        <p>In-container codegen of pre-push hooks + command wrappers from <code>guardrails:</code>. Egress allowlist enforcement (iptables or proxy sidecar). <code>--learn-mode</code> proposes the right allowlist by observing one session. Headless <code>boring run</code>.</p>
-      </div>
-      <div class="card">
-        <span class="tag">v1.x</span>
-        <h3>Distribution &amp; speed</h3>
-        <p>Public <code>curl | bash</code> install. Theme preset images published to <code>ghcr.io</code> so first-run drops from ~60s to ~5s. Auto-recreate the container when the compose file changes. <code>brew</code> + <code>winget</code> formulas.</p>
+        <h3>Polish + five presets + public release</h3>
+        <p><strong>2 weeks.</strong> Five presets complete (<code>python</code>, <code>node</code>, <code>node-postgres</code>, <code>django-node</code>, <code>shopify</code>) with <code>preset_version:</code> parameterization. Final marketing pass. Quality bar: &ldquo;I want this to just work.&rdquo; <code>brew</code> formula and a <code>bun</code> preset are v1.x. <code>winget</code> later. <a href="https://github.com/steig/boring/blob/main/docs/ards/ard-0014-preset-versioning-and-v10-preset-list.md">ARD-0014</a>.</p>
       </div>
       <div class="card">
         <span class="tag">v2</span>
         <h3>Team telemetry</h3>
-        <p>Optional opt-in metrics: first-open duration, build times, failure stages. So you can actually measure whether the dev experience is improving instead of guessing.</p>
+        <p>Optional opt-in metrics: first-open duration, build times, failure stages, which prompts led to a merged PR. So you can actually measure whether the dev experience is improving instead of guessing.</p>
       </div>
     </div>
   </section>
 
   <section>
-    <h2><span class="sub">Get started</span>v0.1 works today.</h2>
+    <h2><span class="sub">Get started</span>Today &mdash; the early-adopter path.</h2>
     <p class="lead">
-      The repo is private during v0 development &mdash; access is by invite while we shake out the edges. Once public, install will be one line; for now it&rsquo;s a clone.
+      The repo is private during v0 development &mdash; access is by invite while Tom personally helps the first team members install. The v0.3 slice flips the repo public and ships the one-line curl installer. <code>brew</code> deferred to v1.x.
     </p>
 <pre><span class="c"># prerequisites: docker (Orbstack on Mac), then:</span>
-$ brew install devcontainer
+$ brew install devcontainer jq yq    <span class="c"># yq must be the mikefarah Go variant</span>
 $ git clone git@github.com:steig/boring.git ~/code/boring
 $ export PATH="$HOME/code/boring:$PATH"
 $ boring doctor
 
 <span class="c"># in any boring-enabled repo (one with .boring/profile.yaml):</span>
-$ boring open .</pre>
+$ boring open .
+
+<span class="c"># coming in v0.3 — the one-line install:</span>
+<span class="c"># $ curl -fsSL https://boring.steig.io/install.sh | bash</span></pre>
     <p class="lead" style="margin-top: 24px;">
       Want access, or to chat about whether boring fits your team? Reach <a href="mailto:tom@steig.io">tom@steig.io</a>. Architecture and decisions are all in <a href="https://github.com/steig/boring/tree/main/docs/ards">docs/ards/</a> &mdash; designed in the open, recorded as ARDs, evolved as we learn.
     </p>
@@ -542,7 +700,7 @@ $ boring open .</pre>
 
   <footer>
     <span>&copy; 2026 boring &middot; built on <a href="https://github.com/steig/dbx"><code>dbx</code></a></span>
-    <span>Updated 2026-05-23 &middot; v0.1 &middot; <a href="https://github.com/steig/boring">github.com/steig/boring</a></span>
+    <span>Updated 2026-05-24 &middot; v0.2 shipped, v0.3 in progress &middot; <a href="https://github.com/steig/boring">github.com/steig/boring</a></span>
   </footer>
 
 </main>
