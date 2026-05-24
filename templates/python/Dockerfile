@@ -1,62 +1,59 @@
-# boring preset: django-node
-# Polyglot stack for Django + React/Vite + Postgres dev (the
-# ~/code/work/content-infrastructure shape). Python 3.14 + uv + Node 20 +
-# libpq + postgres-client + claude defaults via the `common` build context.
-# Mirrors the shopify preset's structure for consistency (dev user 1000,
-# NOPASSWD sudo, xdg-open shim, ARD-0006 trust-anchor enforcement).
+# boring preset: python
+# Pure Python (uv-based) sandbox for FastAPI/Flask/ML/data/scripts work.
+# Mirrors django-node's structure (dev user 1000, NOPASSWD sudo, xdg-open
+# shim, ARD-0006 trust-anchor enforcement) minus the Node and libpq layers.
+# Single-service compose, no sidecars (a profile can add its own via services:).
 #
 # Versioning (ARD-0014): toolchain versions are ARGs with v1.0 defaults. A
 # profile that needs different versions overrides them via `preset_version:`
 # (lib/compose.sh translates that into `--build-arg KEY=value` per service).
 ARG PYTHON_VERSION=3.14
-ARG NODE_VERSION=20
 FROM python:${PYTHON_VERSION}-slim-bookworm
 
-# Re-declare ARGs that we reference AFTER the FROM (Docker scopes ARGs declared
-# before FROM to the FROM directive only). UV_VERSION is the Astral installer
-# version, pinned for reproducibility.
-ARG NODE_VERSION
+# UV_VERSION is the Astral installer version, pinned for reproducibility.
 ARG UV_VERSION=0.11.6
 
-# System deps + GitHub CLI apt + Node 20 via NodeSource + libpq + psql client,
-# all in one layer to keep the image lean.
+# System deps + GitHub CLI apt, all in one layer to keep the image lean.
 #
-# Why these: ca-certificates/curl/gnupg are needed to add the gh + nodesource
-# apt repos. git for git ops. sudo so the dev user can elevate (required for
+# Why these: ca-certificates/curl/gnupg are needed to add the gh apt repo.
+# git for git ops. sudo so the dev user can elevate (required for
 # `sudo touch /var/lib/boring/setup-complete` in ARD-0007's setup: marker).
 # tini reaps zombies and forwards signals so devcontainer exec into us is
 # clean. build-essential is here because some Python wheels (cryptography
 # etc.) still occasionally need it; cheap insurance vs. mysterious uv-sync
-# failures. libpq5 is psycopg's runtime dep; postgresql-client gives `psql`
-# and `pg_isready` for use in setup: hooks (migrate prerequisites, health
-# probes from inside the dev container).
+# failures.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg git sudo tini build-essential \
-      libpq5 postgresql-client \
  && mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | gpg --dearmor -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
  && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list \
- && curl -fsSL "https://deb.nodesource.com/setup_${NODE_VERSION}.x" | bash - \
- && apt-get install -y --no-install-recommends nodejs gh \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
 # uv: pinned via UV_VERSION ARG above. We install to /usr/local/bin so it's on
-# PATH for every shell, then unset UV_PYTHON_DOWNLOADS at the project level by
-# pointing UV_PROJECT_ENVIRONMENT at a project-local .venv (the wrapped repo
-# manages this; we just install the tool). UV_PYTHON_DOWNLOADS=never makes uv
-# use the system Python 3.14 instead of pulling its own managed runtime,
-# matching content-infrastructure's Dockerfile pattern.
+# PATH for every shell. UV_PYTHON_DOWNLOADS=never makes uv use the system
+# Python instead of pulling its own managed runtime — matching the
+# django-node convention.
 ENV UV_PYTHON_DOWNLOADS=never
 RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh \
  && mv /root/.local/bin/uv /usr/local/bin/uv
 
-# Claude Code CLI as a global npm package (current stable channel).
-RUN npm install -g @anthropic-ai/claude-code \
- && npm cache clean --force
+# Claude Code CLI. The python preset has no global Node runtime, but the
+# Claude Code CLI is distributed as a Node tarball; install Node only as a
+# build-time tool, then install Claude Code globally and leave npm out of the
+# image. (For a project that needs Node at dev time, use preset: node or
+# preset: django-node instead.)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && npm install -g @anthropic-ai/claude-code \
+ && npm cache clean --force \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 
 # Non-root dev user matching host UID/GID 1000 so bind-mounted /workspace is
 # writable without chown dance. NOPASSWD sudo so setup: can `sudo touch`
@@ -68,7 +65,7 @@ RUN groupadd --gid 1000 dev \
 
 # /workspace is where boring bind-mounts the host repo.
 # /home/dev/.config pre-created so host bind-mounts under it don't have Docker
-#   create the parent as root (same fix as the shopify preset).
+#   create the parent as root.
 # /var/lib/boring pre-created and owned by dev so setup: marker writes work
 #   (ARD-0007 §5). Saves a sudo on the happy path.
 RUN mkdir -p /workspace /home/dev/.config /var/lib/boring \
@@ -104,11 +101,6 @@ COPY --from=common --chown=dev:dev claude/ /home/dev/.claude/
 WORKDIR /workspace
 USER dev
 ENV HOME=/home/dev
-
-# 8000 — Django dev server (`uv run python backend/manage.py runserver`)
-# 5173 — Vite dev server (`cd frontend && npm run dev`)
-# Documentation only; devcontainer wires actual forwarding via forward_ports:.
-EXPOSE 8000 5173
 
 # tini reaps zombies and forwards signals correctly when devcontainer execs into us.
 ENTRYPOINT ["/usr/bin/tini", "--"]

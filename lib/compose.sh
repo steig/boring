@@ -58,7 +58,26 @@ _compose_emit_yaml() {
   case "$base_image" in
     boring/shopify-theme:v1) preset_subdir="shopify" ;;
     boring/django-node:v1)   preset_subdir="django-node" ;;
+    boring/python:v1)        preset_subdir="python" ;;
+    boring/node:v1)          preset_subdir="node" ;;
+    boring/node-postgres:v1) preset_subdir="node-postgres" ;;
   esac
+
+  # ARD-0014: preset_version entries become docker build ARGs. Convention:
+  # the map key is uppercased and suffixed with _VERSION (python -> PYTHON_VERSION,
+  # node -> NODE_VERSION, ruby -> RUBY_VERSION). The Dockerfile's ARG declaration
+  # is the contract — an unknown key just becomes an unused build-arg (Docker
+  # warns but doesn't fail). Emitted only when preset_version is non-empty AND
+  # a preset build context applies (skipped for stack.dockerfile / stack.base_image).
+  local build_args_block=""
+  if [[ -n "$preset_subdir" || -n "$dockerfile" ]]; then
+    build_args_block="$(jq -r '
+      .preset_version // {}
+      | to_entries
+      | map("        \(.key | ascii_upcase)_VERSION: \"\(.value)\"")
+      | join("\n")
+    ' <<<"$profile_json")"
+  fi
 
   if [[ -n "$dockerfile" ]]; then
     image_directive="    build:
@@ -80,6 +99,13 @@ _compose_emit_yaml() {
     image_directive="    image: $base_image"
   else
     die "compose_generate: profile has neither stack.dockerfile nor stack.base_image (and no preset matched)"
+  fi
+
+  # Append args: block under build: if preset_version produced any entries.
+  if [[ -n "$build_args_block" ]]; then
+    image_directive="${image_directive}
+      args:
+${build_args_block}"
   fi
 
   # Volumes: source bind-mount + each profile mount entry.

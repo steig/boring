@@ -4,7 +4,17 @@
 # Constraint says use node:20-bookworm-slim, but Ruby 3.3 isn't in bookworm apt.
 # Picking ruby:3.3-slim-bookworm + NodeSource Node 20 instead: both tools come from
 # upstream-official sources, no version managers, both pinned to declared majors.
-FROM ruby:3.3-slim-bookworm
+#
+# Versioning (ARD-0014): toolchain versions are ARGs with v1.0 defaults. A
+# profile that needs different versions overrides them via `preset_version:`
+# (lib/compose.sh translates that into `--build-arg KEY=value` per service).
+ARG RUBY_VERSION=3.3
+ARG NODE_VERSION=20
+FROM ruby:${RUBY_VERSION}-slim-bookworm
+
+# Re-declare post-FROM ARGs we still reference (Docker scopes pre-FROM ARGs
+# to the FROM directive only).
+ARG NODE_VERSION
 
 # System deps + GitHub CLI repo + Node 20 via NodeSource, all in one layer to keep image lean.
 # curl/gnupg/ca-certificates needed to add the gh + nodesource apt repos.
@@ -18,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list \
- && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && curl -fsSL "https://deb.nodesource.com/setup_${NODE_VERSION}.x" | bash - \
  && apt-get install -y --no-install-recommends nodejs gh \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
