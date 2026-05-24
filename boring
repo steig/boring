@@ -49,13 +49,28 @@ BORING_REMOTE_ENV_ARGS=()
 # ============================================================================
 
 cmd_open() {
-  # ARD-0004 + ARD-0007 v0.2 slice + ARD-0010 audit slice: accept a local path;
-  # resolve secret URIs via lib/secrets.sh; emit .devcontainer/{docker-compose.yml,
-  # devcontainer.json} including the audit FIFO bind-mount; spawn the host-side
-  # audit collector; bring container up via devcontainer CLI passing resolved
-  # secrets as --remote-env (never written to disk); verify setup marker post-up.
-  # URL cloning, egress enforcement, and guardrails codegen still deferred.
-  local target="${1:-.}"
+  # ARD-0004 + ARD-0007 v0.2 + ARD-0009 guardrails + ARD-0010 audit + ARD-0011
+  # egress. Resolves secret URIs via lib/secrets.sh; emits .devcontainer/
+  # docker-compose.yml + devcontainer.json including the boring-runtime RO
+  # mount + audit FIFO + egress allowlist; spawns the host-side audit collector;
+  # brings container up via devcontainer CLI passing resolved secrets via
+  # --remote-env (never written to disk); verifies setup marker post-up.
+  #
+  # Flags:
+  #   --learn-mode  Per ARD-0011, install iptables LOG (audit-only) rules
+  #                 instead of REJECT. On Ctrl-C, parse the logs and emit a
+  #                 proposed egress.allow diff for the user to paste.
+  local target=""
+  local learn_mode=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --learn-mode) learn_mode=1; shift ;;
+      --) shift; break ;;
+      -*) die "boring open: unknown flag $1" ;;
+      *) [[ -z "$target" ]] && target="$1" || die "boring open: extra argument $1"; shift ;;
+    esac
+  done
+  target="${target:-.}"
 
   if [[ "$target" =~ ^(git@|https?://) ]]; then
     die "boring open: URL cloning not yet implemented for v1. Clone manually, then run 'boring open <path>'."
@@ -112,6 +127,22 @@ cmd_open() {
   _compose_emit_guardrails_runtime "$profile_json" "$repo"
   log_success "boring-runtime/ written"
 
+  # ARD-0011: set BORING_EGRESS_MODE so the in-container install-egress
+  # entrypoint picks it up. Only meaningful when egress.allow is non-empty
+  # (in which case compose.sh wired NET_ADMIN + the env var into the dev
+  # service). Extends the SIGINT trap to also emit the --learn-mode diff
+  # before the audit collector teardown fires.
+  if [[ "$learn_mode" -eq 1 ]]; then
+    if egress_enabled "$profile_json"; then
+      export BORING_EGRESS_MODE=learn
+      log_info "egress: --learn-mode active (LOG-only, no REJECT)"
+      BORING_OPEN_LEARN_REPO="$repo"
+      trap '_cmd_open_emit_learn_diff "$BORING_OPEN_LEARN_REPO"; _cmd_open_stop_audit_collector "$BORING_OPEN_PROFILE_NAME"; exit 130' INT TERM
+    else
+      log_warn "egress: --learn-mode requested but profile has no egress.allow — nothing to learn"
+    fi
+  fi
+
   log_step "Bringing dev container up (devcontainer up)"
   # ${arr[@]+"${arr[@]}"} (unwrapped) is the bash-3.2-safe idiom that expands
   # to nothing on an empty array under `set -u`. The fully-wrapped variant
@@ -126,11 +157,15 @@ cmd_open() {
   log_success "Ready. Attach your editor, or open a shell with:"
   log_info "  devcontainer exec --workspace-folder \"$repo\" -- bash"
   log_info "Audit collector running (pid $(cat "$(audit_pid_file "$name")" 2>/dev/null || echo '?')). Ctrl-C to tear down."
+  if [[ "$learn_mode" -eq 1 ]] && egress_enabled "$profile_json"; then
+    log_info "egress --learn-mode: use the container, then Ctrl-C to print the proposed allowlist diff."
+  fi
 
   # Hold the foreground until the user signals shutdown. Without this wait,
   # the script would exit immediately, EXIT-trap-tearing-down the collector
   # while the container is still up. devcontainer up returns once the
-  # container is healthy; we then wait on the collector pid.
+  # container is healthy; we then wait on the collector pid. SIGINT fires the
+  # combined trap above (audit teardown + optional --learn-mode diff).
   _cmd_open_wait_for_shutdown "$name"
 }
 
@@ -246,6 +281,26 @@ _cmd_open_verify_setup() {
   log_success "setup completed (after re-run)"
 }
 
+# _cmd_open_emit_learn_diff <repo>
+# Triggered by the --learn-mode SIGINT trap (combined with the audit-collector
+# teardown). Pulls the container's kernel log and runs the iptables LOG parser
+# to print the proposed egress.allow diff for the user to paste into the
+# profile. Best-effort: if the container is already down, log a warning.
+_cmd_open_emit_learn_diff() {
+  local repo="$1"
+  log_step "egress: collecting --learn-mode attempts"
+  local tmp
+  tmp="$(mktemp -t boring-learn.XXXXXX)"
+  if devcontainer_exec --workspace-folder "$repo" -- dmesg > "$tmp" 2>/dev/null; then
+    local profile_json
+    profile_json="$(profile_load "$repo")"
+    egress_propose_allowlist_diff "$profile_json" "$tmp"
+  else
+    log_warn "egress: could not collect kernel log from container (container may already be down)"
+  fi
+  rm -f "$tmp"
+}
+
 cmd_run() {
   log_warn "boring run: not yet implemented (v0 skeleton)"
   exit 1
@@ -295,13 +350,18 @@ cmd_help() {
 boring $VERSION — dev container launcher for wrapped apps
 
 USAGE
-  boring open <git-url|.>          Clone or attach a boring-enabled repo
-  boring run <profile> --task <t>  Headless task run (v1.x)
-  boring audit security <profile>  Read profile-shared security events (ARD-0010)
-  boring audit prompts  <profile>  Read prompt events (per-user by default)
-  boring doctor                    Diagnose environment
-  boring version                   Print version
-  boring help                      Print this help
+  boring open [--learn-mode] <path>  Open a boring-enabled repo
+  boring run <profile> --task <t>    Headless task run (v1.x)
+  boring audit security <profile>    Read profile-shared security events (ARD-0010)
+  boring audit prompts  <profile>    Read prompt events (per-user by default)
+  boring doctor                      Diagnose environment
+  boring version                     Print version
+  boring help                        Print this help
+
+FLAGS
+  --learn-mode   Per ARD-0011, install iptables LOG-only egress rules and
+                 propose an allowlist diff on Ctrl-C. No-op for profiles
+                 without egress.allow.
 
 A boring-enabled repo contains a .boring/profile.yaml describing the dev
 environment. boring composes existing tools (dbx, devcontainer CLI, docker)

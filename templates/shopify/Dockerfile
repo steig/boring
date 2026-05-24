@@ -22,6 +22,7 @@ ARG NODE_VERSION
 # sudo is installed so the dev user can elevate inside the container when wanted (not required).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg git sudo tini build-essential \
+      iptables iproute2 gosu dnsutils \
  && mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | gpg --dearmor -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -118,12 +119,25 @@ RUN chmod 0755 /usr/local/boring/bin/audit-emit \
  && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-tool_used \
  && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-prompt_completed
 
+# Egress enforcement (ARD-0011). install-egress runs as root at boot, installs
+# iptables OUTPUT rules from /etc/boring/egress.allow (RO bind-mount from host),
+# then drops to the `dev` user via gosu before execing user code. Noop unless
+# BORING_EGRESS_MODE is set — profiles without egress.allow are unaffected.
+COPY --from=common --chmod=0755 bin/install-egress /usr/local/boring/bin/install-egress
+RUN mkdir -p /etc/boring /var/log/boring \
+ && chown dev:dev /var/log/boring
+
 WORKDIR /workspace
-USER dev
+# Note: no `USER dev` here — install-egress requires root to install iptables
+# rules, then `exec gosu dev` drops privileges before user code runs. For
+# profiles without egress.allow, BORING_EGRESS_MODE is unset and install-egress
+# is a thin passthrough that still drops to dev via gosu.
 ENV HOME=/home/dev
 
 # 9292 is Shopify CLI's theme-dev hot-reload proxy. Documentation only; devcontainer wires forwarding.
 EXPOSE 9292
 
 # tini reaps zombies and forwards signals correctly when devcontainer execs into us.
-ENTRYPOINT ["/usr/bin/tini", "--"]
+# install-egress is in the entrypoint chain so it runs BEFORE the container
+# command — it either installs rules or noops, then execs gosu dev "$@".
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/boring/bin/install-egress"]

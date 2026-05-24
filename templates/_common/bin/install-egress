@@ -1,0 +1,149 @@
+#!/bin/sh
+# install-egress — install iptables OUTPUT rules at container boot, then exec
+# the original command as the dev user.
+#
+# Per ARD-0011, this runs as root (PID 1's first child) before user code.
+# It reads:
+#   BORING_EGRESS_MODE        enforce | learn | (unset → noop)
+#   /etc/boring/egress.allow  one hostname per line, RO bind-mount from host
+#
+# Failure mode: if BORING_EGRESS_MODE=enforce and rule install fails, we exit
+# non-zero — better to fail loud than ship a container that thinks it's
+# protected but isn't. learn-mode failures degrade to warnings.
+#
+# After installing rules, capabilities are dropped via `gosu dev` — the dev
+# user cannot mutate iptables to weaken policy.
+
+set -eu
+
+MODE="${BORING_EGRESS_MODE:-}"
+ALLOW_FILE="${BORING_EGRESS_ALLOW_FILE:-/etc/boring/egress.allow}"
+LOG_PREFIX="[boring-egress-attempt] "
+FIFO="${BORING_EVENTS_FIFO:-/var/log/boring/events.fifo}"
+
+log() { printf '[install-egress] %s\n' "$*" >&2; }
+
+emit_event() {
+  # JSON-Lines event to ARD-0010 FIFO if it exists, else stderr.
+  # Wrap with `timeout` to avoid blocking forever on a FIFO with no reader
+  # (POSIX open-for-write blocks until a reader exists). When ARD-0010 lands
+  # the FIFO will have a reader; until then, the 1s timeout falls back to
+  # stderr without stalling boot.
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  evt="{\"ts\":\"$ts\",\"kind\":\"$1\",\"msg\":\"$2\"}"
+  if [ -p "$FIFO" ] && command -v timeout >/dev/null 2>&1; then
+    if ! printf '%s\n' "$evt" | timeout 1 dd of="$FIFO" status=none 2>/dev/null; then
+      printf '%s\n' "$evt" >&2
+    fi
+  else
+    printf '%s\n' "$evt" >&2
+  fi
+}
+
+if [ -z "$MODE" ]; then
+  # Egress unconfigured for this profile — passthrough.
+  exec gosu dev "$@"
+fi
+
+if [ "$MODE" != "enforce" ] && [ "$MODE" != "learn" ]; then
+  log "unknown BORING_EGRESS_MODE='$MODE' (want enforce|learn) — failing closed"
+  exit 2
+fi
+
+if ! command -v iptables >/dev/null 2>&1; then
+  log "iptables not installed in image — cannot enforce egress"
+  exit 2
+fi
+
+# Detect compose-network CIDR. The container's eth0 is on the compose-managed
+# bridge; `ip route` shows it as the first non-default route. Falls back to
+# 172.16.0.0/12 (Docker's default private range) if detection fails.
+NET_CIDR="$(ip route 2>/dev/null | awk '/dev eth0/ && $1 != "default" {print $1; exit}')"
+if [ -z "$NET_CIDR" ]; then
+  log "could not detect compose network CIDR; falling back to 172.16.0.0/12"
+  NET_CIDR="172.16.0.0/12"
+fi
+
+# Choose the tail action — REJECT for enforce, LOG (audit-only) for learn.
+case "$MODE" in
+  enforce) TAIL_RULE="-j REJECT --reject-with icmp-net-prohibited" ;;
+  learn)   TAIL_RULE="-j LOG --log-prefix $LOG_PREFIX --log-level 4" ;;
+esac
+
+install_v4() {
+  iptables -F OUTPUT
+  iptables -P OUTPUT ACCEPT  # safe baseline while we install; tail-rule decides final fate
+  iptables -A OUTPUT -o lo -j ACCEPT
+  iptables -A OUTPUT -d "$NET_CIDR" -j ACCEPT
+  iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+  iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+  # Allow established/related so return traffic for already-accepted flows works.
+  iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+  if [ -r "$ALLOW_FILE" ]; then
+    while IFS= read -r host; do
+      # Skip blanks and comments.
+      case "$host" in ''|\#*) continue ;; esac
+      # getent ahostsv4 returns "<ip> STREAM <host>" lines; dedupe IPs.
+      ips="$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u)"
+      if [ -z "$ips" ]; then
+        log "warning: could not resolve $host (v4); skipping"
+        continue
+      fi
+      for ip in $ips; do
+        iptables -A OUTPUT -d "$ip" -j ACCEPT
+      done
+    done < "$ALLOW_FILE"
+  fi
+
+  # shellcheck disable=SC2086  # TAIL_RULE intentionally word-split
+  iptables -A OUTPUT $TAIL_RULE
+}
+
+install_v6() {
+  # IPv6 may not be available (Orbstack often disables it inside containers).
+  # If ip6tables isn't usable, log and skip — leaving v6 unconfigured is fine
+  # when v6 isn't routable in the first place.
+  if ! ip6tables -L >/dev/null 2>&1; then
+    log "ip6tables unavailable; skipping IPv6 rule install (likely no v6 in container)"
+    return 0
+  fi
+  ip6tables -F OUTPUT
+  ip6tables -P OUTPUT ACCEPT
+  ip6tables -A OUTPUT -o lo -j ACCEPT
+  ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT
+  ip6tables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+  ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+  if [ -r "$ALLOW_FILE" ]; then
+    while IFS= read -r host; do
+      case "$host" in ''|\#*) continue ;; esac
+      ips="$(getent ahostsv6 "$host" 2>/dev/null | awk '{print $1}' | sort -u)"
+      [ -z "$ips" ] && continue
+      for ip in $ips; do
+        ip6tables -A OUTPUT -d "$ip" -j ACCEPT
+      done
+    done < "$ALLOW_FILE"
+  fi
+
+  # shellcheck disable=SC2086
+  ip6tables -A OUTPUT $TAIL_RULE
+}
+
+log "mode=$MODE  net_cidr=$NET_CIDR  allow_file=$ALLOW_FILE"
+if ! install_v4; then
+  log "failed to install IPv4 rules"
+  emit_event egress_install_failed "ipv4 rule install failed"
+  exit 3
+fi
+install_v6 || log "IPv6 rule install failed (continuing — v4 is the load-bearing path)"
+
+emit_event egress_installed "mode=$MODE net=$NET_CIDR"
+
+# Drop privileges and exec the original command. gosu clears capabilities by
+# default — the dev user has no CAP_NET_ADMIN and cannot mutate iptables.
+if ! command -v gosu >/dev/null 2>&1; then
+  log "gosu not installed; refusing to run user code as root"
+  exit 2
+fi
+exec gosu dev "$@"
