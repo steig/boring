@@ -15,27 +15,27 @@ $ boring open https://github.com/your-team/chat-app
 [OK]  chat-app ready. Attach your editor or run: code .
 ```
 
-## Status — v0.1.0-dev
+## Status — v0.2.0-dev
 
-**Shopify-first v1 slice validated end-to-end.** The minimal `boring open <path>` loop works against a production Shopify theme repo: profile parsed, `.devcontainer/` generated, container up with Node 20 + Ruby 3.3 + Shopify CLI + gh + Claude Code preinstalled, host's source bind-mounted to `/workspace`, port-forwards live, Shopify CLI authenticated via device-code flow, `npm run dev` serving the theme on `localhost:9292` with hot-reload. Architecture documented in [docs/ards/](docs/ards/).
+**Second dogfood slice landed: `preset: django-node` + multi-service compose + at-start secret resolution** (see [ARD-0007](docs/ards/ard-0007-django-node-and-multi-service-compose.md)). Shopify-first v1 slice remains validated end-to-end against a production Shopify theme repo. Architecture documented in [docs/ards/](docs/ards/).
 
 What works today:
 
 - `boring help`, `boring version`, `boring doctor`
-- `boring open <local-path>` — parses `.boring/profile.yaml`, generates `.devcontainer/docker-compose.yml` + `.devcontainer/devcontainer.json`, brings the container up via `devcontainer up`
-- `lib/profile.sh` — schema parser with overlay merge, theme presets, `mounts:` + `forward_ports:` + `guardrails:` + `secret://...` URI classification
-- `lib/compose.sh` — generates the v1 single-service compose layout from the normalized profile JSON
-- `lib/secrets.sh` — `!secret` URI resolver for `op://`, `keychain:`, `dbx-vault:`, `vault://`, `aws-sm:`, `env:`, `file:`
-- `templates/shopify/` — `theme: shopify` preset Dockerfile, ~34s build, ~1.45GB image
+- `boring open <local-path>` — parses `.boring/profile.yaml`, resolves `secret://` URIs via `lib/secrets.sh` (passed to `devcontainer up --remote-env`, never written to disk), generates `.devcontainer/docker-compose.yml` + `.devcontainer/devcontainer.json`, brings the container up, runs `setup:` (with re-verification via a `/var/lib/boring/setup-complete` marker)
+- `lib/profile.sh` — schema v1 with `profile_version:`, `preset:` (renamed from `theme:` — soft deprecated), `mounts:`, `forward_ports:`, `services:` (structured sidecars), `volumes:`, `setup:`, `guardrails:`, `secret://...` URI classification; overlay merge; per-preset defaults seeding
+- `lib/compose.sh` — multi-service compose layout with auto-wired `depends_on` (healthcheck-aware), top-level named volumes, `postCreateCommand` from `setup:` with success marker
+- `lib/secrets.sh` — `!secret` URI resolver for `op://`, `keychain:`, `dbx-vault:`, `vault://`, `aws-sm:`, `env:`, `file:` (wired into `boring open`)
+- `templates/shopify/` — `preset: shopify` Dockerfile, ~34s build, ~1.45GB image
+- `templates/django-node/` — `preset: django-node` Dockerfile, Python 3.14 + uv + Node 20 + libpq + psql + Claude Code, seeds postgres:17 sidecar + DATABASE_URL when used
 
-What's still deferred (per [ARD-0004](docs/ards/ard-0004-shopify-first-as-dogfood-path.md) + [ARD-0005](docs/ards/ard-0005-security-model-inversion.md)):
+What's still deferred (per [ARD-0004](docs/ards/ard-0004-shopify-first-as-dogfood-path.md) + [ARD-0005](docs/ards/ard-0005-security-model-inversion.md) + [ARD-0007](docs/ards/ard-0007-django-node-and-multi-service-compose.md)):
 
 - `boring open <git-url>` — URL-cloning path; today, clone manually and pass the local path
 - `boring run <profile> --task <t>` — headless agent run
-- Compose sidecars (Postgres / Redis / etc.) and dbx-restore-into-sidecar (Django use case; v1.x)
+- dbx-restore-into-sidecar for real-shape data (full Django case; later v1.x slice)
 - Egress allowlist enforcement and `--learn-mode` (v1.x)
 - `guardrails:` codegen (pre-push hooks, command wrappers, `~/.claude/settings.json` writeout)
-- Secret URI resolution at container start (today: literal env vars only)
 - Auto-recreate the container when the compose file changes (today: manual `docker compose down` after profile edits)
 
 ## Why boring
@@ -88,6 +88,8 @@ Every material design decision is recorded as an **ARD** (Architectural Decision
 - [**ARD-0003**](docs/ards/ard-0003-devcontainer-cli-as-runtime-dependency.md) — `devcontainer` CLI for container lifecycle
 - [**ARD-0004**](docs/ards/ard-0004-shopify-first-as-dogfood-path.md) — Shopify-first as the v1 dogfood path; defers dbx integration + sidecars to v1.x
 - [**ARD-0005**](docs/ards/ard-0005-security-model-inversion.md) — security model inversion: v1 contains the non-engineer + AI from accidentally damaging prod systems; egress allowlist deferred to v1.x
+- [**ARD-0006**](docs/ards/ard-0006-profile-is-the-trust-anchor.md) — the profile is the trust anchor; in-container agents cannot modify `.boring/*`
+- [**ARD-0007**](docs/ards/ard-0007-django-node-and-multi-service-compose.md) — `preset: django-node`, multi-service compose, profile schema versioning, `setup:` lifecycle, at-start secret resolution
 
 The convention for writing new ARDs (full vs. mini, numbering, supersession, when to write one) is in [`docs/ards/README.md`](docs/ards/README.md). New design decisions get an ARD at the time of decision, not after.
 
