@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#
+# boring — dev container launcher for wrapped apps
+# https://github.com/steig/boring
+#
+VERSION="0.1.0-dev"
+#
+# Usage:
+#   boring open <git-url|.>           Clone or attach a boring-enabled repo
+#   boring run <profile> --task <t>   Headless task run (v1.x)
+#   boring doctor                     Diagnose environment
+#   boring version                    Print version
+#   boring help                       Print this help
+#
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${BORING_LIB_DIR:-$SCRIPT_DIR/lib}"
+
+# ============================================================================
+# Source library modules
+# ============================================================================
+
+source "$LIB_DIR/core.sh"
+source "$LIB_DIR/secrets.sh"
+source "$LIB_DIR/dbx.sh"
+source "$LIB_DIR/devcontainer.sh"
+source "$LIB_DIR/profile.sh"
+source "$LIB_DIR/compose.sh"
+source "$LIB_DIR/egress.sh"
+source "$LIB_DIR/doctor.sh"
+
+# ============================================================================
+# Subcommands
+# ============================================================================
+
+cmd_open() {
+  # v1 (Shopify-first, ARD-0004): accept a local path; emit
+  # .devcontainer/{docker-compose.yml,devcontainer.json} from the profile; bring
+  # the container up via devcontainer CLI. URL cloning, secret URI resolution,
+  # egress enforcement, guardrails codegen are deferred to subsequent slices.
+  local target="${1:-.}"
+
+  if [[ "$target" =~ ^(git@|https?://) ]]; then
+    die "boring open: URL cloning not yet implemented for v1. Clone manually, then run 'boring open <path>'."
+  fi
+
+  [[ -d "$target" ]] || die "boring open: not a directory: $target"
+  local repo
+  repo="$(cd "$target" && pwd)"
+
+  log_step "Loading profile from $repo/.boring/profile.yaml"
+  local profile_json
+  profile_json="$(profile_load "$repo")"
+
+  local name
+  name="$(jq -r '.name' <<<"$profile_json")"
+  log_info "Profile: $name"
+
+  log_step "Generating .devcontainer/{docker-compose.yml,devcontainer.json}"
+  compose_generate "$profile_json" "$repo"
+  log_success ".devcontainer/ written"
+
+  log_step "Bringing dev container up (devcontainer up)"
+  devcontainer_up --workspace-folder "$repo"
+
+  log_success "Ready. Attach your editor, or open a shell with:"
+  log_info "  devcontainer exec --workspace-folder \"$repo\" -- bash"
+}
+
+cmd_run() {
+  log_warn "boring run: not yet implemented (v0 skeleton)"
+  exit 1
+}
+
+cmd_doctor() {
+  doctor_run "$@"
+}
+
+cmd_version() {
+  echo "boring $VERSION"
+}
+
+cmd_help() {
+  cat <<EOF
+boring $VERSION — dev container launcher for wrapped apps
+
+USAGE
+  boring open <git-url|.>          Clone or attach a boring-enabled repo
+  boring run <profile> --task <t>  Headless task run (v1.x)
+  boring doctor                    Diagnose environment
+  boring version                   Print version
+  boring help                      Print this help
+
+A boring-enabled repo contains a .boring/profile.yaml describing the dev
+environment. boring composes existing tools (dbx, devcontainer CLI, docker)
+rather than reimplementing them; see docs/ards/ for the design record.
+
+DOCS
+  https://github.com/steig/boring
+EOF
+}
+
+# ============================================================================
+# Main dispatch
+# ============================================================================
+
+main() {
+  local subcommand="${1:-help}"
+  shift || true
+
+  case "$subcommand" in
+    open)               cmd_open    "$@" ;;
+    run)                cmd_run     "$@" ;;
+    doctor)             cmd_doctor  "$@" ;;
+    version|-v|--version) cmd_version ;;
+    help|-h|--help)     cmd_help ;;
+    *)
+      log_error "Unknown command: $subcommand"
+      echo >&2
+      cmd_help >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

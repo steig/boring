@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(/workspace/.boring/**)",
+      "Write(/workspace/.boring/**)"
+    ]
+  }
+}

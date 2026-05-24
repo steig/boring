@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>boring — give your team the power to ship</title>
+<meta name="description" content="boring is a CLI that turns any repo into a one-command, isolated dev environment with real-shape data. Built for teams who want non-engineers to ship safely." />
+<style>
+  :root {
+    --bg: #0e0f12;
+    --bg-elev: #16181d;
+    --bg-elev-2: #1c1f26;
+    --fg: #e8eaee;
+    --fg-muted: #9aa0aa;
+    --fg-soft: #6e747f;
+    --accent: #c1ff72;
+    --accent-soft: rgba(193, 255, 114, 0.12);
+    --border: #2a2d36;
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f7f7f5;
+      --bg-elev: #ffffff;
+      --bg-elev-2: #f0f0ec;
+      --fg: #14161a;
+      --fg-muted: #555a63;
+      --fg-soft: #8a8f99;
+      --accent: #2f7a18;
+      --accent-soft: rgba(47, 122, 24, 0.08);
+      --border: #e1e2dd;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 64px 28px 96px;
+  }
+  header.hero {
+    margin-bottom: 96px;
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 32px;
+  }
+  .brand .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 18px var(--accent);
+  }
+  h1 {
+    font-size: clamp(36px, 6vw, 64px);
+    line-height: 1.05;
+    margin: 0 0 24px;
+    letter-spacing: -0.02em;
+    font-weight: 700;
+  }
+  h1 .accent { color: var(--accent); }
+  .lede {
+    font-size: clamp(18px, 2.2vw, 22px);
+    line-height: 1.5;
+    color: var(--fg-muted);
+    max-width: 680px;
+    margin: 0 0 32px;
+  }
+  .cta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-radius: 999px;
+    background: var(--bg-elev);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .pill.accent {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  code, pre, .mono {
+    font-family: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+    font-size: 0.92em;
+  }
+  pre {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 22px;
+    overflow-x: auto;
+    line-height: 1.55;
+  }
+  pre .c { color: var(--fg-soft); }
+  pre .a { color: var(--accent); }
+  section {
+    margin-bottom: 80px;
+  }
+  h2 {
+    font-size: clamp(26px, 3.4vw, 36px);
+    line-height: 1.15;
+    margin: 0 0 16px;
+    letter-spacing: -0.015em;
+    font-weight: 700;
+  }
+  h2 .sub {
+    display: block;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    margin-bottom: 10px;
+  }
+  h3 {
+    font-size: 19px;
+    margin: 0 0 8px;
+    font-weight: 600;
+  }
+  p { margin: 0 0 14px; }
+  p.lead { color: var(--fg-muted); max-width: 720px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+    margin-top: 28px;
+  }
+  .card {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+  }
+  .card .kicker {
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 12px;
+  }
+  .card p { color: var(--fg-muted); margin: 0; font-size: 15px; line-height: 1.55; }
+  .row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    align-items: start;
+  }
+  @media (max-width: 720px) { .row { grid-template-columns: 1fr; } }
+  .steps {
+    counter-reset: step;
+    list-style: none;
+    padding: 0;
+    margin: 28px 0 0;
+  }
+  .steps li {
+    counter-increment: step;
+    padding: 18px 22px 18px 64px;
+    position: relative;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+  }
+  .steps li::before {
+    content: counter(step);
+    position: absolute;
+    left: 18px;
+    top: 18px;
+    width: 32px;
+    height: 32px;
+    background: var(--accent);
+    color: var(--bg);
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .steps li strong { font-size: 16px; display: block; margin-bottom: 4px; }
+  .steps li span { color: var(--fg-muted); font-size: 14px; line-height: 1.5; }
+  .audience {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin-top: 28px;
+  }
+  .audience .card { padding: 28px; }
+  .audience h3 { margin-bottom: 8px; }
+  .audience .who {
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 14px;
+  }
+  .audience p { font-size: 15px; }
+  table.pillars { width: 100%; border-collapse: collapse; margin-top: 24px; }
+  table.pillars td {
+    padding: 18px 0;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  table.pillars td:first-child {
+    width: 180px;
+    color: var(--accent);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    padding-top: 22px;
+  }
+  table.pillars tr:last-child td { border-bottom: none; }
+  .quote {
+    background: var(--bg-elev-2);
+    border-left: 3px solid var(--accent);
+    padding: 22px 26px;
+    border-radius: 4px;
+    margin: 36px 0;
+    color: var(--fg);
+    font-size: 18px;
+    line-height: 1.55;
+  }
+  footer {
+    margin-top: 80px;
+    padding-top: 32px;
+    border-top: 1px solid var(--border);
+    color: var(--fg-soft);
+    font-size: 13px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: space-between;
+  }
+  footer a { color: var(--fg-muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .tag {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+    margin-right: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+</style>
+</head>
+<body>
+<main class="container">
+
+  <header class="hero">
+    <div class="brand"><span class="dot"></span> boring</div>
+    <h1>Give your team the power to <span class="accent">ship</span>.</h1>
+    <p class="lede">
+      boring turns any repo into a one-command, isolated dev environment with real-shape data and an AI pair already at the keyboard. So your PM, your designer, your friend with the great idea, and your tech lead can all build in the same codebase &mdash; without anyone touching Docker.
+    </p>
+    <div class="cta-row">
+      <span class="pill accent">v0.1 &mdash; Shopify themes shipping today</span>
+      <span class="pill">Validated on a production Shopify theme</span>
+      <span class="pill">macOS &middot; Linux</span>
+    </div>
+  </header>
+
+  <section>
+    <h2><span class="sub">The problem</span>Ideas die in the setup.</h2>
+    <p class="lead">
+      Every non-engineer with an idea hits the same wall: "clone the repo, install Postgres, configure your env, get the API keys, restore a backup, install Redis, hope it works." Half give up. The other half ship something that barely runs on one laptop. Meanwhile your engineers spend Tuesdays debugging someone else's local environment instead of building.
+    </p>
+    <p class="lead">
+      boring removes the wall. One command. Isolated container. Realistic data. AI assistant ready. Same shape on every laptop, every time.
+    </p>
+  </section>
+
+  <section>
+    <h2><span class="sub">How it works</span>From <code>git clone</code> to a working dev loop in six steps.</h2>
+    <p class="lead">
+      Here&rsquo;s the actual walkthrough from the v0.1 dogfood against <code>a production Shopify theme</code> &mdash; no fictional examples.
+    </p>
+    <ol class="steps">
+      <li>
+        <strong>Install boring + dependencies (one-time per machine).</strong>
+        <span><code>brew install devcontainer</code>, install Orbstack or Docker Desktop, install boring (curl install when the repo is public; clone-and-PATH for now). <code>boring doctor</code> reports any gaps.</span>
+      </li>
+      <li>
+        <strong>Drop a profile into the repo.</strong>
+        <span><code>.boring/profile.yaml</code> declares <code>theme: shopify</code>, the mounts to share host CLI auth, ports to forward, and any per-project env. About 30 lines. Reviewable in a PR.</span>
+      </li>
+      <li>
+        <strong>Open it.</strong>
+        <span><code>boring open .</code> parses the profile, generates <code>.devcontainer/docker-compose.yml</code> + <code>devcontainer.json</code>, and brings up a container with Node 20, Ruby 3.3, Shopify CLI, <code>gh</code>, and Claude Code preinstalled. First run ~60s; reopens ~5s.</span>
+      </li>
+      <li>
+        <strong>Authenticate, once.</strong>
+        <span>Inside the container: <code>shopify auth login</code> uses the device-code flow &mdash; the CLI prints a URL, you open it in your host browser, approve. Tokens persist to your host via the bind-mount.</span>
+      </li>
+      <li>
+        <strong>Develop with hot-reload + Claude in the loop.</strong>
+        <span><code>npm run dev</code> serves the dev store at <code>localhost:9292</code> in your host browser. Edit Liquid/CSS/JS in VS Code (attached via Dev Containers extension); Claude inside the container is project-scoped &mdash; ask it to make a change, see it in the preview.</span>
+      </li>
+      <li>
+        <strong>Ship.</strong>
+        <span>Commit on a feature branch inside the container, <code>gh pr create</code>. The PR lands in your repo, engineers review, your team&rsquo;s normal deploy workflow takes over.</span>
+      </li>
+    </ol>
+    <p class="lead" style="margin-top: 24px; font-size: 15px; color: var(--fg-soft);">
+      Headless agent runs (<code>boring run &lt;profile&gt; --task &hellip;</code>) and `--learn-mode` egress allowlists are on the roadmap, not in v0.1.
+    </p>
+  </section>
+
+  <section>
+    <h2><span class="sub">Why boring</span>The boring choices, finally.</h2>
+    <p class="lead">
+      Most "make dev easier" tools cheat by skipping the hard parts &mdash; isolation, real data, secrets, network safety &mdash; and you find out at the worst possible moment. boring is built around three priorities, in this order:
+    </p>
+    <table class="pillars">
+      <tr>
+        <td>Security first</td>
+        <td>
+          Per-project egress allowlists block prompt-injection exfiltration before it happens. Sensitive data restores are ephemeral and never sit on disk between sessions. Secrets live in your OS keyring (or 1Password, or Vault &mdash; pluggable). Audit log of every sensitive restore in case a laptop walks off.
+        </td>
+      </tr>
+      <tr>
+        <td>Practicality second</td>
+        <td>
+          One CLI. Stateless. Compose sidecars under the hood (boring-supported, not boring-customized). The profile lives in your repo as <code>.boring/profile.yaml</code> &mdash; reviewable in a PR, versioned with your code, the single source of truth. No drift across teammates' laptops.
+        </td>
+      </tr>
+      <tr>
+        <td>Speed third</td>
+        <td>
+          First open in ~90 seconds. Subsequent opens in ~5 seconds. Container stays warm. Source code lives in a bind-mount so host-side and container-side <code>git</code> are the same git. Orbstack on Mac means near-native file performance.
+        </td>
+      </tr>
+    </table>
+  </section>
+
+  <section>
+    <h2><span class="sub">For your team</span>Built for the people who actually have to use it.</h2>
+    <div class="audience">
+      <div class="card">
+        <div class="who">PMs &middot; designers &middot; founders</div>
+        <h3>Build the prototype yourself.</h3>
+        <p>You don't need to know what Postgres is, or what a port is. <code>boring open</code> the repo and start prompting Claude. The data shape is real. Your "what if it looked like this" turns into a branch your engineer can review on Monday.</p>
+      </div>
+      <div class="card">
+        <div class="who">Tech leads</div>
+        <h3>Stop being the dev environment helpdesk.</h3>
+        <p>One profile in the repo replaces twelve Notion pages, four Slack threads, and the recurring "how do I run this locally" interrupt. New hires onboard in one command. The dev environment is a PR like anything else.</p>
+      </div>
+      <div class="card">
+        <div class="who">Backend teams</div>
+        <h3>Real-shape data, zero blast radius.</h3>
+        <p>Sanitized prod restores into ephemeral containers. Egress controlled per project. Claude's tool scope and MCP servers are per-profile, so the bot working on <code>auth-service</code> can't see <code>billing-service</code> memory.</p>
+      </div>
+      <div class="card">
+        <div class="who">Solo founders &middot; friends</div>
+        <h3>Send the profile, get a collaborator.</h3>
+        <p>Share the repo, share the wins. Your friend with the idea opens your app on their laptop in 90 seconds, with realistic data, in a sandbox they can't break. They ship a small thing. You merge it. They feel powerful. You keep shipping.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="sub">Anatomy of a profile</span>.boring/profile.yaml</h2>
+    <p class="lead">
+      Everything boring needs to recreate the dev environment lives in one file. Below is the actual v0.1 profile shipping for <code>a production Shopify theme</code> &mdash; this is what runs, not a marketing mockup.
+    </p>
+<pre><span class="c"># .boring/profile.yaml</span>
+<span class="a">name</span>: my-shopify-theme
+<span class="a">theme</span>: shopify           <span class="c"># picks the Shopify Dockerfile preset + egress defaults</span>
+
+<span class="a">services</span>: []              <span class="c"># Shopify hosts the data; no sidecars in v0.1</span>
+
+<span class="c"># Share host CLI auth into the container. RW so `shopify auth login`</span>
+<span class="c"># and `gh` can persist tokens back to the host.</span>
+<span class="a">mounts</span>:
+  - ~/.config/shopify:/home/dev/.config/shopify
+  - ~/.config/gh:/home/dev/.config/gh
+
+<span class="c"># 9292 = `shopify theme dev` hot-reload; 3456 = OAuth callback (if used)</span>
+<span class="a">forward_ports</span>: [9292, 3456]
+
+<span class="a">env</span>:
+  <span class="a">SHOPIFY_STORE</span>: your-dev-store
+  <span class="a">SHOPIFY_FLAG_STORE</span>: your-dev-store    <span class="c"># both names: npm scripts + CLI native</span>
+
+<span class="c"># Per ARD-0005, in-container guardrails refuse pushes that would touch prod.</span>
+<span class="c"># Codegen of pre-push hooks + command wrappers ships in the next slice;</span>
+<span class="c"># the schema is parsed today.</span>
+<span class="a">guardrails</span>:
+  <span class="a">forbid_branches</span>: [main, dev-preview]
+  <span class="a">forbid_commands</span>:
+    - "gh pr merge"
+    - "shopify theme push --live"
+
+<span class="a">data_sensitivity</span>: internal   <span class="c"># no DB to gate in v0.1; matters for Django (v1.x)</span></pre>
+  </section>
+
+  <section>
+    <div class="quote">
+      "The whole pitch is that the boring choices, made boringly well, are what make a team fast. We just made them defaults."
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="sub">Features</span>What ships today, what&rsquo;s next.</h2>
+    <p class="lead">
+      Honest tags. <span class="tag">today</span> = working in v0.1, validated end-to-end. <span class="tag" style="background: rgba(154, 160, 170, 0.12); color: var(--fg-muted);">roadmap</span> = designed, scheduled, not yet shipping.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <span class="tag">today</span>
+        <div class="kicker" style="margin-top: 8px;">Profile-in-repo</div>
+        <p><code>.boring/profile.yaml</code> is the single source of truth. Sharing the profile is sharing the repo &mdash; no <code>export</code>/<code>import</code> dance, no drift across laptops. Schema validated, overlay merge for user-local overrides.</p>
+      </div>
+      <div class="card">
+        <span class="tag">today</span>
+        <div class="kicker" style="margin-top: 8px;">Theme presets</div>
+        <p><code>theme: shopify</code> selects a curated Dockerfile (Node 20, Ruby 3.3, Shopify CLI, <code>gh</code>, Claude Code) with non-root user, port-forwards, and the egress-allowlist defaults that match the tool. Django, Rails, and others land next.</p>
+      </div>
+      <div class="card">
+        <span class="tag">today</span>
+        <div class="kicker" style="margin-top: 8px;">Project-scoped AI</div>
+        <p>Claude lives inside the container, with project-scoped MCP servers, memory, and conversation history. A poisoned file in one project can&rsquo;t read another project&rsquo;s notes. API key resolves from your existing secret store.</p>
+      </div>
+      <div class="card">
+        <span class="tag">today</span>
+        <div class="kicker" style="margin-top: 8px;">Pluggable secrets resolver</div>
+        <p>boring owns zero secret storage. The profile declares URIs into <em>your</em> store: <code>op://</code>, <code>keychain:</code>, <code>vault://</code>, <code>aws-sm:</code>, <code>dbx-vault:</code>, <code>env:</code>, <code>file:</code>. Resolved at container start. Nothing in <code>.env</code>. Nothing in shell history.</p>
+      </div>
+      <div class="card">
+        <span class="tag">today</span>
+        <div class="kicker" style="margin-top: 8px;"><code>boring doctor</code></div>
+        <p>One command diagnoses runtime versions, devcontainer CLI, dbx, and the optional URI-resolver tools (<code>op</code>, <code>vault</code>, <code>aws</code>, <code>security</code>, <code>secret-tool</code>). Tech leads stop being the dev-environment helpdesk.</p>
+      </div>
+      <div class="card">
+        <span class="tag">today</span>
+        <div class="kicker" style="margin-top: 8px;">VS Code &amp; Codespaces compatible</div>
+        <p>Because boring generates a standard <code>devcontainer.json</code>, your team can open the project with VS Code&rsquo;s Dev Containers extension &mdash; or in GitHub Codespaces &mdash; with no boring CLI installed on their end.</p>
+      </div>
+      <div class="card">
+        <span class="tag" style="background: rgba(154, 160, 170, 0.12); color: var(--fg-muted);">roadmap</span>
+        <div class="kicker" style="margin-top: 8px;">Egress allowlist enforcement</div>
+        <p>Schema is parsed today; iptables-in-container vs. proxy-sidecar prototype lands in v1.x. <code>--learn-mode</code> will observe a session and propose the right allowlist based on what your app actually called.</p>
+      </div>
+      <div class="card">
+        <span class="tag" style="background: rgba(154, 160, 170, 0.12); color: var(--fg-muted);">roadmap</span>
+        <div class="kicker" style="margin-top: 8px;">Guardrails codegen</div>
+        <p>The <code>guardrails:</code> block (forbidden branches, forbidden commands, allowed Claude tools) is parsed today. Codegen of in-container pre-push hooks + command wrappers ships next &mdash; so accidental pushes to <code>main</code> are mechanically impossible.</p>
+      </div>
+      <div class="card">
+        <span class="tag" style="background: rgba(154, 160, 170, 0.12); color: var(--fg-muted);">roadmap</span>
+        <div class="kicker" style="margin-top: 8px;">Sidecars + dbx restore</div>
+        <p>Compose sidecars (Postgres, Redis, etc.) with <code>dbx restore</code> piping prod-shape data into a named container. Ephemeral DB volumes auto-derived from <code>data_sensitivity</code>. The Django use case.</p>
+      </div>
+      <div class="card">
+        <span class="tag" style="background: rgba(154, 160, 170, 0.12); color: var(--fg-muted);">roadmap</span>
+        <div class="kicker" style="margin-top: 8px;">Headless <code>boring run</code></div>
+        <p>The same container shape, invoked as a one-shot autonomous Claude task from CI, a Slack bot, or your terminal. Shares the egress allowlist, vault, and guardrails with the interactive entry point.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="sub">Roadmap</span>Where it goes from here.</h2>
+    <div class="grid">
+      <div class="card">
+        <span class="tag">v0.1</span>
+        <h3>Shopify themes</h3>
+        <p><strong>Shipping today.</strong> <code>boring open</code> end-to-end against <code>a production Shopify theme</code>: profile parser, compose generator, Shopify Dockerfile preset, secret URI resolver, <code>boring doctor</code>. Plumbing validated; non-engineer + Claude can iterate the theme and submit PRs.</p>
+      </div>
+      <div class="card">
+        <span class="tag">v1.0</span>
+        <h3>Django + sidecars</h3>
+        <p>The case boring was originally designed for. Compose sidecars (Postgres, Redis), <code>dbx restore --into &lt;sidecar&gt;</code>, env-var rewrites so the wrapped app talks to sidecar hostnames without editing <code>.env</code>, ephemeral DB volumes derived from <code>data_sensitivity</code>.</p>
+      </div>
+      <div class="card">
+        <span class="tag">v1.x</span>
+        <h3>Guardrails + egress</h3>
+        <p>In-container codegen of pre-push hooks + command wrappers from <code>guardrails:</code>. Egress allowlist enforcement (iptables or proxy sidecar). <code>--learn-mode</code> proposes the right allowlist by observing one session. Headless <code>boring run</code>.</p>
+      </div>
+      <div class="card">
+        <span class="tag">v1.x</span>
+        <h3>Distribution &amp; speed</h3>
+        <p>Public <code>curl | bash</code> install. Theme preset images published to <code>ghcr.io</code> so first-run drops from ~60s to ~5s. Auto-recreate the container when the compose file changes. <code>brew</code> + <code>winget</code> formulas.</p>
+      </div>
+      <div class="card">
+        <span class="tag">v2</span>
+        <h3>Team telemetry</h3>
+        <p>Optional opt-in metrics: first-open duration, build times, failure stages. So you can actually measure whether the dev experience is improving instead of guessing.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="sub">Get started</span>v0.1 works today.</h2>
+    <p class="lead">
+      The repo is private during v0 development &mdash; access is by invite while we shake out the edges. Once public, install will be one line; for now it&rsquo;s a clone.
+    </p>
+<pre><span class="c"># prerequisites: docker (Orbstack on Mac), then:</span>
+$ brew install devcontainer
+$ git clone git@github.com:steig/boring.git ~/code/boring
+$ export PATH="$HOME/code/boring:$PATH"
+$ boring doctor
+
+<span class="c"># in any boring-enabled repo (one with .boring/profile.yaml):</span>
+$ boring open .</pre>
+    <p class="lead" style="margin-top: 24px;">
+      Want access, or to chat about whether boring fits your team? Reach <a href="mailto:tom@steig.io">tom@steig.io</a>. Architecture and decisions are all in <a href="https://github.com/steig/boring/tree/main/docs/ards">docs/ards/</a> &mdash; designed in the open, recorded as ARDs, evolved as we learn.
+    </p>
+  </section>
+
+  <footer>
+    <span>&copy; 2026 boring &middot; built on <a href="https://github.com/steig/dbx"><code>dbx</code></a></span>
+    <span>Updated 2026-05-23 &middot; v0.1 &middot; <a href="https://github.com/steig/boring">github.com/steig/boring</a></span>
+  </footer>
+
+</main>
+</body>
+</html>

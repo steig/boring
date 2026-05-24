@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code — user-local settings should not ship
+.claude/settings.local.json
+
+# boring — user-local profile overlay (per ARD-0001)
+.boring/profile.overlay.yaml
+
+# Common build/output noise (preemptive)
+*.log
+.env
+.env.*
+!.env.example
+
+# Test scratch
+/tmp/
+/.tmp/
