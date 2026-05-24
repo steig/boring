@@ -48,8 +48,11 @@ RUN groupadd --gid 1000 dev \
 # /home/dev/.config is also pre-created so that boring's bind-mounts (~/.config/shopify, ~/.config/gh)
 # don't cause Docker to create the parent dir as root, which would block sibling CLIs like
 # shopify-cli-kit-nodejs (a different config dir under .config/) from writing.
-RUN mkdir -p /workspace /home/dev/.config \
- && chown -R dev:dev /workspace /home/dev
+# /var/log/boring is the parent dir for the ARD-0010 audit FIFO bind-mount; pre-create so
+# Docker can land the FIFO mount at /var/log/boring/events.fifo without conflict.
+RUN mkdir -p /workspace /home/dev/.config /var/log/boring \
+ && chown -R dev:dev /workspace /home/dev \
+ && chmod 0755 /var/log/boring
 
 # xdg-open shim. Headless containers have no browser; CLIs that try to spawn
 # one (shopify auth login, gh auth login, claude auth, etc.) crash with
@@ -84,9 +87,12 @@ ENV PATH="/workspace/.devcontainer/boring-runtime/bin:${PATH}"
 
 # Claude Code defaults baked into the container, shared across all theme
 # presets via the `common` build context (templates/_common/claude/):
-#   - settings.json       Trust-anchor deny rules (ARD-0006); baseline that
-#                         boring's host-side jq merge layers `permissions.allow`
-#                         on top of per profile (ARD-0009).
+#   - settings.json       Baseline trust-anchor deny rules (ARD-0006) + audit
+#                         hook entries (ARD-0010 §3) + deny rules for
+#                         settings.json itself and the audit-emit scripts
+#                         (ARD-0010 trust-anchor extension). boring's host-side
+#                         jq merge layers `permissions.allow` on top of this
+#                         baseline per profile (ARD-0009).
 #   - CLAUDE.md           Karpathy behavioral guidelines + boring local rules
 #   - skills/grill-me/    /grill-me available to the user inside the container
 # When adding new theme presets (django, rails, etc.), copy this RUN+COPY
@@ -99,6 +105,18 @@ COPY --from=common --chown=dev:dev claude/ /home/dev/.claude/
 RUN rm -f /home/dev/.claude/settings.json \
  && ln -s /workspace/.devcontainer/boring-runtime/claude/settings.json /home/dev/.claude/settings.json \
  && chown -h dev:dev /home/dev/.claude/settings.json
+
+# ARD-0010 audit-emit binaries: image-baked at /usr/local/boring/bin/ so the
+# Claude Code hooks declared in settings.json can call them. Symlinks per kind
+# satisfy the "audit-emit-<kind>" file pattern; the script derives the kind
+# from $0 basename. Owned by root (not dev) so even sudo within the container
+# can't replace them via `cp` without first removing the file — and the
+# settings.json deny rules block that path for Claude.
+COPY --from=common --chown=root:root boring-bin/audit-emit /usr/local/boring/bin/audit-emit
+RUN chmod 0755 /usr/local/boring/bin/audit-emit \
+ && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-prompt_issued \
+ && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-tool_used \
+ && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-prompt_completed
 
 WORKDIR /workspace
 USER dev

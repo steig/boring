@@ -325,8 +325,16 @@ _compose_emit_yaml() {
 ${build_args_block}"
   fi
 
+  # Audit FIFO bind-mount (ARD-0010): the per-profile FIFO on the host is
+  # mounted into the container as the in-container write target. The container
+  # only ever has the writer side of this pipe — no other file under the audit
+  # tree is mounted, so an in-container agent cannot rewrite past events.
+  local profile_name audit_fifo_host
+  profile_name="$(jq -r '.name' <<<"$profile_json")"
+  audit_fifo_host="$DATA_DIR/audit/$profile_name/events.fifo"
+
   # Volumes: source bind-mount + ARD-0009 guardrails-runtime RO remount +
-  # each profile mount entry.
+  # ARD-0010 audit FIFO + each profile mount entry.
   # `..` resolves to the repo root because the compose file lives at
   # <repo>/.devcontainer/docker-compose.yml. Don't use `.` here — it would
   # mount only the .devcontainer/ directory.
@@ -335,9 +343,10 @@ ${build_args_block}"
   # narrower mount), which is what makes the host-writes-container-reads-RO
   # trust-anchor contract of ARD-0009 hold.
   local volumes
-  volumes="$(jq -r '
+  volumes="$(jq -r --arg fifo "$audit_fifo_host" '
     ["..:/workspace:cached",
-     "../.devcontainer/boring-runtime:/workspace/.devcontainer/boring-runtime:ro"] +
+     "../.devcontainer/boring-runtime:/workspace/.devcontainer/boring-runtime:ro",
+     ($fifo + ":/var/log/boring/events.fifo")] +
     (.mounts | map(
       if .ro then "\(.host):\(.container):ro" else "\(.host):\(.container)" end
     ))

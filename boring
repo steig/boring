@@ -30,6 +30,7 @@ source "$LIB_DIR/profile.sh"
 source "$LIB_DIR/compose.sh"
 source "$LIB_DIR/egress.sh"
 source "$LIB_DIR/doctor.sh"
+source "$LIB_DIR/audit.sh"
 
 # ============================================================================
 # Globals
@@ -48,10 +49,11 @@ BORING_REMOTE_ENV_ARGS=()
 # ============================================================================
 
 cmd_open() {
-  # ARD-0004 + ARD-0007 v0.2 slice: accept a local path; resolve secret URIs
-  # via lib/secrets.sh; emit .devcontainer/{docker-compose.yml,devcontainer.json};
-  # bring container up via devcontainer CLI passing resolved secrets as
-  # --remote-env (never written to disk); verify setup marker post-up.
+  # ARD-0004 + ARD-0007 v0.2 slice + ARD-0010 audit slice: accept a local path;
+  # resolve secret URIs via lib/secrets.sh; emit .devcontainer/{docker-compose.yml,
+  # devcontainer.json} including the audit FIFO bind-mount; spawn the host-side
+  # audit collector; bring container up via devcontainer CLI passing resolved
+  # secrets as --remote-env (never written to disk); verify setup marker post-up.
   # URL cloning, egress enforcement, and guardrails codegen still deferred.
   local target="${1:-.}"
 
@@ -71,11 +73,33 @@ cmd_open() {
   name="$(jq -r '.name' <<<"$profile_json")"
   log_info "Profile: $name"
 
+  # Stash for the SIGINT/SIGTERM/EXIT trap below — the trap fires in a
+  # context where local variables of this function aren't visible.
+  BORING_OPEN_PROFILE_NAME="$name"
+  # INT/TERM: graceful tear-down + non-zero exit (130 = SIGINT convention).
+  trap '_cmd_open_stop_audit_collector "$BORING_OPEN_PROFILE_NAME"; exit 130' INT TERM
+  # EXIT: catch the "boring crashed unexpectedly" path so we don't orphan the
+  # collector subshell. Idempotent with the INT/TERM teardown above.
+  trap '_cmd_open_stop_audit_collector "${BORING_OPEN_PROFILE_NAME:-}"' EXIT
+
   # Resolve !secret URIs into a --remote-env arg list. Resolved secret values
   # never touch disk: compose.sh skips secret-kind env, and these args are
   # passed straight to `devcontainer up` (which injects via the runtime env).
   # Output written to the global BORING_REMOTE_ENV_ARGS (see top of file).
   _cmd_open_resolve_secrets "$profile_json"
+
+  # Stamp the profile name + host username into the container env so the
+  # audit-emit shim can fill the JSON envelope's profile/user fields. These
+  # are not secrets but they ride the same --remote-env channel so they
+  # don't end up baked into compose YAML on disk.
+  BORING_REMOTE_ENV_ARGS+=(--remote-env "BORING_PROFILE_NAME=$name")
+  BORING_REMOTE_ENV_ARGS+=(--remote-env "BORING_HOST_USER=${USER:-unknown}")
+
+  # Start the audit collector BEFORE compose generation so its FIFO is in place
+  # by the time docker bind-mounts it into the container. compose.sh references
+  # the FIFO path; the FIFO needs to be a real FIFO (not a regular file Docker
+  # auto-creates from a missing mount source) at `devcontainer up` time.
+  _cmd_open_start_audit_collector "$profile_json"
 
   log_step "Generating .devcontainer/{docker-compose.yml,devcontainer.json}"
   compose_generate "$profile_json" "$repo"
@@ -96,8 +120,64 @@ cmd_open() {
 
   _cmd_open_verify_setup "$profile_json" "$repo"
 
+  # The collector keeps running across the container's lifetime; the user
+  # signals shutdown with Ctrl-C, which the trap catches. Print a hint so the
+  # user knows the foreground process they just attached to has audit duty.
   log_success "Ready. Attach your editor, or open a shell with:"
   log_info "  devcontainer exec --workspace-folder \"$repo\" -- bash"
+  log_info "Audit collector running (pid $(cat "$(audit_pid_file "$name")" 2>/dev/null || echo '?')). Ctrl-C to tear down."
+
+  # Hold the foreground until the user signals shutdown. Without this wait,
+  # the script would exit immediately, EXIT-trap-tearing-down the collector
+  # while the container is still up. devcontainer up returns once the
+  # container is healthy; we then wait on the collector pid.
+  _cmd_open_wait_for_shutdown "$name"
+}
+
+# _cmd_open_start_audit_collector <profile-json>
+# Routes the profile's audit.prompts setting into the collector so it knows
+# which prompt log file to write to. Always non-fatal: a failed collector
+# start shouldn't block the container from coming up — the user will see
+# missing audit data and `boring doctor` (TODO) will flag it.
+_cmd_open_start_audit_collector() {
+  local profile_json="$1"
+  local profile visibility
+  profile="$(jq -r '.name' <<<"$profile_json")"
+  visibility="$(jq -r '.audit.prompts // "per_user"' <<<"$profile_json")"
+
+  log_step "Starting audit collector (profile=$profile, prompts=$visibility)"
+  if audit_collector_start "$profile" "$visibility"; then
+    log_success "audit collector live; FIFO at $(audit_fifo_path "$profile")"
+  else
+    log_warn "audit collector failed to start (events will not be captured this session)"
+  fi
+}
+
+# _cmd_open_stop_audit_collector <profile-name>
+# Invoked from the SIGINT/SIGTERM trap and from the foreground waiter. Tears
+# down the collector + FIFO. Idempotent.
+_cmd_open_stop_audit_collector() {
+  local profile="${1:-}"
+  [[ -z "$profile" ]] && return 0
+  log_step "Stopping audit collector for profile $profile"
+  audit_collector_stop "$profile" || true
+}
+
+# _cmd_open_wait_for_shutdown <profile-name>
+# Blocks the foreground on the collector PID. The trap on INT/TERM does the
+# teardown; this wait just keeps the script alive so the trap can fire.
+_cmd_open_wait_for_shutdown() {
+  local profile="$1"
+  local pid pidfile
+  pidfile="$(audit_pid_file "$profile")"
+  pid="$(cat "$pidfile" 2>/dev/null || echo '')"
+  [[ -z "$pid" ]] && return 0
+  # `wait` only works on direct children; fall back to a polling loop because
+  # the collector was spawned via subshell `&` and may not be in the same
+  # job table as our current shell on every bash version.
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+  done
 }
 
 # _cmd_open_resolve_secrets <profile-json>
@@ -171,6 +251,37 @@ cmd_run() {
   exit 1
 }
 
+# cmd_audit security|prompts <profile>
+# Read-only surface over the JSONL audit logs (ARD-0010 §5). `security` always
+# reads from the shared profile-wide file; `prompts` honors the profile's
+# audit.prompts setting (per_user reads <USER>/<profile>/prompts.jsonl, shared
+# reads _shared/<profile>/prompts.jsonl). Reading does not require the
+# container to be up — a PM can scroll yesterday's session.
+cmd_audit() {
+  local sub="${1:-}"; shift || true
+  local profile="${1:-}"; shift || true
+  case "$sub" in
+    security)
+      [[ -n "$profile" ]] || die "boring audit security: missing <profile>"
+      audit_cat_security "$profile" ;;
+    prompts)
+      [[ -n "$profile" ]] || die "boring audit prompts: missing <profile>"
+      # Resolve audit.prompts from the profile if we can find the repo; default
+      # to per_user otherwise. The repo isn't required (the logs live in
+      # $DATA_DIR keyed by profile name), but knowing visibility is.
+      local visibility="per_user"
+      if [[ -f ".boring/profile.yaml" ]]; then
+        local pjson
+        pjson="$(profile_load "$(pwd)" 2>/dev/null || echo '')"
+        [[ -n "$pjson" ]] && visibility="$(jq -r '.audit.prompts // "per_user"' <<<"$pjson")"
+      fi
+      audit_cat_prompts "$profile" "$visibility" ;;
+    *)
+      log_error "boring audit: usage: boring audit {security|prompts} <profile>"
+      exit 1 ;;
+  esac
+}
+
 cmd_doctor() {
   doctor_run "$@"
 }
@@ -186,6 +297,8 @@ boring $VERSION — dev container launcher for wrapped apps
 USAGE
   boring open <git-url|.>          Clone or attach a boring-enabled repo
   boring run <profile> --task <t>  Headless task run (v1.x)
+  boring audit security <profile>  Read profile-shared security events (ARD-0010)
+  boring audit prompts  <profile>  Read prompt events (per-user by default)
   boring doctor                    Diagnose environment
   boring version                   Print version
   boring help                      Print this help
@@ -210,6 +323,7 @@ main() {
   case "$subcommand" in
     open)               cmd_open    "$@" ;;
     run)                cmd_run     "$@" ;;
+    audit)              cmd_audit   "$@" ;;
     doctor)             cmd_doctor  "$@" ;;
     version|-v|--version) cmd_version ;;
     help|-h|--help)     cmd_help ;;
