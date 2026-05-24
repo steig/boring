@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# lib/egress.sh — per-profile egress allowlist enforcement (ARD-0011).
+# lib/egress.sh — per-profile egress allowlist enforcement (ARD-0011, ARD-0015).
 #
 # Mechanism: container-side iptables rules installed at boot by the
 # install-egress entrypoint script (templates/_common/bin/install-egress).
@@ -8,8 +8,11 @@
 #   1. Tells compose.sh what to splice into the dev service (cap_add + mount).
 #   2. Writes the resolved allowlist to a file that's bind-mounted into the
 #      container at /etc/boring/egress.allow.
-#   3. After --learn-mode shutdown, reads iptables LOG entries from the
-#      container's kernel log and emits a proposed YAML diff.
+#   3. After --learn-mode shutdown, reads NFLOG-derived JSON-Lines from the
+#      egress-logger sidecar's ulogd.json (ARD-0015) and emits a proposed
+#      YAML diff. The dmesg-based v0.3 path is gone — ulogd2 in the sidecar
+#      is cross-platform (works on Mac+Orbstack where dmesg-from-container
+#      doesn't see iptables LOG entries).
 
 # egress_enabled <profile-json>
 # Returns 0 if .egress.allow is non-empty, 1 otherwise. Used by compose.sh to
@@ -40,13 +43,18 @@ egress_write_allowlist_file() {
   chmod 0444 "$runtime_dir/egress.allow"
 }
 
-# egress_propose_allowlist_diff <profile-json> <log-source>
-# Reads iptables LOG entries from <log-source> (typically the output of
-# `devcontainer exec ... -- dmesg`), greps for the install-egress LOG prefix,
-# extracts destination IPs, reverse-resolves them, dedupes (host,port), and
-# emits a YAML diff snippet on stdout listing attempted-but-not-allowed hosts.
+# egress_propose_allowlist_diff <profile-json> <ulogd-json-path>
+# ARD-0015. Reads the egress-logger sidecar's JSON-Lines output file (one
+# JSON object per packet) — typically
+# <repo>/.devcontainer/boring-runtime/egress-log/ulogd.json — extracts
+# (dest.ip, dest.port) tuples, filters to entries whose oob.prefix matches
+# "boring-egress-attempt" (ignoring anything else that might also be on
+# NFLOG group 5), best-effort reverse-DNSes the IPs into hostnames, dedupes
+# by (host, port), and emits a YAML diff snippet on stdout listing
+# attempted-but-not-allowed hosts for the user to paste into
+# .boring/profile.yaml.
 #
-# Usage: egress_propose_allowlist_diff "$profile_json" /path/to/captured-dmesg
+# Usage: egress_propose_allowlist_diff "$profile_json" /path/to/ulogd.json
 egress_propose_allowlist_diff() {
   local profile_json="$1"
   local log_source="$2"
@@ -57,26 +65,55 @@ egress_propose_allowlist_diff() {
   local already
   already="$(jq -r '(.egress.allow // [])[] | ascii_downcase' <<<"$profile_json" | sort -u)"
 
-  # Extract (dst_ip, dst_port) tuples from kernel LOG lines. iptables LOG
-  # format includes "DST=<ip> ... DPT=<port>" (DST may be IPv4 or IPv6).
+  # ulogd2's JSON output is one JSON object per line. The plugin normalizes
+  # field names by replacing the internal dot-separator with underscores, so
+  # we read "dest_ip" / "dest_port" / "oob.prefix" — that last one is the one
+  # exception (the prefix is stored under a key that does include a dot in
+  # ulogd2's output). We filter on oob.prefix to skip unrelated NFLOG-group-5
+  # traffic if anything else happens to share the group.
+  #
+  # `jq -c -R` reads raw lines, `fromjson?` swallows truncated/blank lines
+  # (e.g. the last line if ulogd2 is mid-write when boring reads). select(...)
+  # filters to our prefix entries; the final select drops rows with no
+  # destination (control packets, IPv6, etc.).
   local tuples
-  tuples="$(grep -F '[boring-egress-attempt]' "$log_source" 2>/dev/null \
-    | sed -nE 's/.*DST=([0-9a-fA-F:.]+).*DPT=([0-9]+).*/\1 \2/p' \
+  tuples="$(jq -c -R 'fromjson? // empty
+                      | select((.["oob.prefix"] // "") | tostring | startswith("boring-egress-attempt"))
+                      | select((.dest_ip // "") != "")
+                      | "\(.dest_ip) \(.dest_port // "0")"
+                     ' "$log_source" 2>/dev/null \
+    | tr -d '"' \
     | sort -u)"
 
   if [[ -z "$tuples" ]]; then
-    echo "# No egress attempts were logged. Either the session made no outbound" >&2
-    echo "# requests, or --learn-mode rules were not active." >&2
+    echo "# No egress attempts were logged in $log_source." >&2
+    echo "# Either the session made no outbound requests, --learn-mode was not active," >&2
+    echo "# or the egress-logger sidecar didn't start. Check 'docker compose logs egress-logger'." >&2
     return 0
   fi
 
-  # Reverse-resolve each IP. Best-effort: IPs that don't reverse stay as IPs.
+  # Reverse-resolve each IP. Best-effort with a short timeout: a slow PTR
+  # lookup shouldn't block diff generation. `getent hosts` is synchronous
+  # with no built-in timeout, so we wrap with `timeout` when available
+  # (coreutils on Linux, gtimeout via brew on Mac). On absence, fall back to
+  # raw IPs to keep the diff useful.
+  local timeout_cmd=""
+  if command -v timeout >/dev/null 2>&1; then
+    timeout_cmd="timeout 1"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_cmd="gtimeout 1"
+  fi
+
   local proposed=()
   local seen_hosts=""
   while IFS=' ' read -r ip port; do
     [[ -z "$ip" ]] && continue
-    local host
-    host="$(getent hosts "$ip" 2>/dev/null | awk '{print $2}' | head -1)"
+    local host=""
+    if [[ -n "$timeout_cmd" ]]; then
+      host="$($timeout_cmd getent hosts "$ip" 2>/dev/null | awk '{print $2}' | head -1)"
+    else
+      host="$(getent hosts "$ip" 2>/dev/null | awk '{print $2}' | head -1)"
+    fi
     [[ -z "$host" ]] && host="$ip"
     host="$(echo "$host" | tr '[:upper:]' '[:lower:]')"
 

@@ -18,7 +18,13 @@ set -eu
 
 MODE="${BORING_EGRESS_MODE:-}"
 ALLOW_FILE="${BORING_EGRESS_ALLOW_FILE:-/etc/boring/egress.allow}"
-LOG_PREFIX="[boring-egress-attempt] "
+# ARD-0015: learn mode logs via NFLOG (userspace netfilter logger) instead of
+# kernel LOG. ulogd2 in the egress-logger sidecar binds NFLOG group 5 on the
+# shared netns and writes JSON-Lines. The prefix is a bare string (no
+# brackets) — NFLOG truncates at 32 chars and we want the raw token for
+# pattern matching at log-parse time.
+NFLOG_GROUP="${BORING_EGRESS_NFLOG_GROUP:-5}"
+NFLOG_PREFIX="boring-egress-attempt"
 FIFO="${BORING_EVENTS_FIFO:-/var/log/boring/events.fifo}"
 
 log() { printf '[install-egress] %s\n' "$*" >&2; }
@@ -64,10 +70,13 @@ if [ -z "$NET_CIDR" ]; then
   NET_CIDR="172.16.0.0/12"
 fi
 
-# Choose the tail action — REJECT for enforce, LOG (audit-only) for learn.
+# Choose the tail action — REJECT for enforce, NFLOG (audit-only, ARD-0015)
+# for learn. NFLOG ships matched packets to the ulogd2 sidecar via the
+# netfilter netlink socket; kernel LOG was the v0.3 path but doesn't reach
+# the sidecar inside Orbstack / Docker-for-Mac VMs.
 case "$MODE" in
   enforce) TAIL_RULE="-j REJECT --reject-with icmp-net-prohibited" ;;
-  learn)   TAIL_RULE="-j LOG --log-prefix $LOG_PREFIX --log-level 4" ;;
+  learn)   TAIL_RULE="-j NFLOG --nflog-group $NFLOG_GROUP --nflog-prefix $NFLOG_PREFIX" ;;
 esac
 
 install_v4() {

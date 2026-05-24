@@ -355,22 +355,23 @@ _cmd_open_run_restores() {
 
 # _cmd_open_emit_learn_diff <repo>
 # Triggered by the --learn-mode SIGINT trap (combined with the audit-collector
-# teardown). Pulls the container's kernel log and runs the iptables LOG parser
-# to print the proposed egress.allow diff for the user to paste into the
-# profile. Best-effort: if the container is already down, log a warning.
+# teardown). ARD-0015: reads the egress-logger sidecar's ulogd.json directly
+# from the host-side bind-mount (no `devcontainer exec` round-trip needed —
+# the file is on the host filesystem). Runs the parser and prints the
+# proposed egress.allow diff for the user to paste into the profile.
+# Best-effort: if the log file is missing (sidecar never started, learn mode
+# wasn't actually active, etc.), log a warning.
 _cmd_open_emit_learn_diff() {
   local repo="$1"
   log_step "egress: collecting --learn-mode attempts"
-  local tmp
-  tmp="$(mktemp -t boring-learn.XXXXXX)"
-  if devcontainer_exec --workspace-folder "$repo" -- dmesg > "$tmp" 2>/dev/null; then
-    local profile_json
-    profile_json="$(profile_load "$repo")"
-    egress_propose_allowlist_diff "$profile_json" "$tmp"
-  else
-    log_warn "egress: could not collect kernel log from container (container may already be down)"
+  local ulogd_json="$repo/.devcontainer/boring-runtime/egress-log/ulogd.json"
+  if [[ ! -r "$ulogd_json" ]]; then
+    log_warn "egress: no ulogd.json at $ulogd_json (egress-logger sidecar may not have started, or --learn-mode was not active for this session)"
+    return 0
   fi
-  rm -f "$tmp"
+  local profile_json
+  profile_json="$(profile_load "$repo")"
+  egress_propose_allowlist_diff "$profile_json" "$ulogd_json"
 }
 
 # ============================================================================
