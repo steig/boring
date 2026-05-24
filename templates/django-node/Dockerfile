@@ -33,6 +33,7 @@ ARG UV_VERSION=0.11.6
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg git sudo tini build-essential \
       libpq5 postgresql-client \
+      iptables iproute2 gosu dnsutils \
  && mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | gpg --dearmor -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -131,8 +132,18 @@ RUN rm -f /home/dev/.claude/settings.json \
 # unmodifiable from inside the container regardless of sudo (the docker
 # daemon enforces the RO bind-mount; file perms aren't the gate).
 
+# Egress enforcement (ARD-0011). install-egress runs as root at boot, installs
+# iptables OUTPUT rules from /etc/boring/egress.allow (RO bind-mount from host),
+# then drops to the `dev` user via gosu before execing user code. Noop unless
+# BORING_EGRESS_MODE is set — profiles without egress.allow are unaffected.
+COPY --from=common --chmod=0755 bin/install-egress /usr/local/boring/bin/install-egress
+RUN mkdir -p /etc/boring
+
 WORKDIR /workspace
-USER dev
+# Note: no `USER dev` here — install-egress requires root to install iptables
+# rules, then `exec gosu dev "$@"` drops privileges before user code runs.
+# For profiles without egress.allow, BORING_EGRESS_MODE is unset and
+# install-egress is a thin passthrough that still drops to dev via gosu.
 ENV HOME=/home/dev
 
 # 8000 — Django dev server (`uv run python backend/manage.py runserver`)
@@ -141,4 +152,6 @@ ENV HOME=/home/dev
 EXPOSE 8000 5173
 
 # tini reaps zombies and forwards signals correctly when devcontainer execs into us.
-ENTRYPOINT ["/usr/bin/tini", "--"]
+# install-egress is in the entrypoint chain so it runs BEFORE the container
+# command — it either installs rules or noops, then execs gosu dev "$@".
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/boring/bin/install-egress"]
