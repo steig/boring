@@ -7,19 +7,16 @@
 # per-kind symlinks (audit-emit-prompt_issued, audit-emit-tool_used,
 # audit-emit-prompt_completed) — the basename of $0 carries the kind.
 #
-# Trust-anchor surface (ARD-0006 + ARD-0010 derived requirement):
-#   This file is image-baked at /usr/local/boring/bin/audit-emit and the
-#   symlinks alongside it. They MUST be unmodifiable from inside the
-#   container — the Claude `deny` rules in /home/dev/.claude/settings.json
-#   include them. If you change this script, also extend the deny rules.
-#
-#   Defense-in-depth gap: the script lives in the container's writable
-#   layer (per the task spec — NOT bind-mounted), so a process with sudo
-#   inside the container can overwrite it. The Claude deny rule blocks
-#   the Claude-tool path (the load-bearing one for v1); sudo + Bash from a
-#   shell session is out of scope for v0.3's threat model (the threat is
-#   an LLM under prompt injection, not a human attacker with shell access).
-#   v1.x can promote this to a RO bind-mount if needed.
+# Trust-anchor surface (ARD-0006 + ARD-0009 pattern, ARD-0010 derived):
+#   This script + per-kind symlinks are emitted host-side at `boring open`
+#   time into <repo>/.devcontainer/boring-runtime/bin/, then bind-mounted
+#   READ-ONLY into the container at /workspace/.devcontainer/boring-runtime/bin/.
+#   The container cannot modify them regardless of sudo — the read-only
+#   bind-mount is enforced by the docker daemon, not by file permissions.
+#   This is the same trust-anchor pattern that protects .boring/* (ARD-0006)
+#   and the pre-push hook + command wrappers (ARD-0009). The Claude `deny`
+#   rule on /workspace/.devcontainer/boring-runtime/** catches Claude-via-tool
+#   attempts before they hit the kernel-level refusal — defense in depth.
 #
 # Failure modes:
 #   - FIFO missing (collector down): we still try to write; the write fails

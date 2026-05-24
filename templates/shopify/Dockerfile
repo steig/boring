@@ -107,17 +107,12 @@ RUN rm -f /home/dev/.claude/settings.json \
  && ln -s /workspace/.devcontainer/boring-runtime/claude/settings.json /home/dev/.claude/settings.json \
  && chown -h dev:dev /home/dev/.claude/settings.json
 
-# ARD-0010 audit-emit binaries: image-baked at /usr/local/boring/bin/ so the
-# Claude Code hooks declared in settings.json can call them. Symlinks per kind
-# satisfy the "audit-emit-<kind>" file pattern; the script derives the kind
-# from $0 basename. Owned by root (not dev) so even sudo within the container
-# can't replace them via `cp` without first removing the file — and the
-# settings.json deny rules block that path for Claude.
-COPY --from=common --chown=root:root boring-bin/audit-emit /usr/local/boring/bin/audit-emit
-RUN chmod 0755 /usr/local/boring/bin/audit-emit \
- && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-prompt_issued \
- && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-tool_used \
- && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-prompt_completed
+# ARD-0010 audit-emit binaries are NO LONGER image-baked here. They live at
+# /workspace/.devcontainer/boring-runtime/bin/audit-emit{,-<kind>}, emitted
+# host-side by `boring open` and bind-mounted RO. This keeps the trust-anchor
+# contract uniform with ARD-0006 and ARD-0009: the policy artifacts are
+# unmodifiable from inside the container regardless of sudo (the docker
+# daemon enforces the RO bind-mount; file perms aren't the gate).
 
 # Egress enforcement (ARD-0011). install-egress runs as root at boot, installs
 # iptables OUTPUT rules from /etc/boring/egress.allow (RO bind-mount from host),

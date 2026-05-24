@@ -96,6 +96,29 @@ _compose_emit_guardrails_runtime() {
   _guardrails_emit_wrappers "$profile_json" "$runtime_dir/bin"
 
   _guardrails_emit_claude_settings "$profile_json" > "$runtime_dir/claude/settings.json"
+
+  # ARD-0010 audit-emit shim + per-kind symlinks. Same host-writes,
+  # container-reads-RO pattern as the rest of boring-runtime/. Was originally
+  # image-baked into /usr/local/boring/bin/ but that path was in the
+  # container's writable layer (sudo + dev user → modifiable). Moved here so
+  # the RO bind-mount makes it structurally immutable from inside.
+  _audit_emit_install "$runtime_dir/bin"
+}
+
+# Copy the audit-emit shim from the shared common template into the runtime
+# bin/ dir, and create the per-kind symlinks Claude Code's hooks invoke.
+# The script itself lives at templates/_common/boring-bin/audit-emit; we
+# don't generate it inline because it's substantive (~80 lines) and shared.
+_audit_emit_install() {
+  local bin_dir="$1"
+  local src="$BORING_TEMPLATE_DIR/_common/boring-bin/audit-emit"
+  [[ -f "$src" ]] || die "_audit_emit_install: source missing: $src"
+
+  install -m 0755 "$src" "$bin_dir/audit-emit"
+  # ln -sf is idempotent; the runtime dir may already exist from a prior open.
+  for kind in prompt_issued tool_used prompt_completed; do
+    ln -sf audit-emit "$bin_dir/audit-emit-$kind"
+  done
 }
 
 # Render the pre-push hook. git invokes it with `<remote-name> <remote-url>`

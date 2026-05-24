@@ -124,15 +124,12 @@ RUN rm -f /home/dev/.claude/settings.json \
  && ln -s /workspace/.devcontainer/boring-runtime/claude/settings.json /home/dev/.claude/settings.json \
  && chown -h dev:dev /home/dev/.claude/settings.json
 
-# ARD-0010 audit-emit binaries: image-baked at /usr/local/boring/bin/. Same
-# pattern as the shopify preset — the Claude hooks declared in settings.json
-# call the per-kind symlinks; the script derives kind from $0. Owned root so
-# the dev user (even with sudo) can't replace via Claude.
-COPY --from=common --chown=root:root boring-bin/audit-emit /usr/local/boring/bin/audit-emit
-RUN chmod 0755 /usr/local/boring/bin/audit-emit \
- && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-prompt_issued \
- && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-tool_used \
- && ln -s /usr/local/boring/bin/audit-emit /usr/local/boring/bin/audit-emit-prompt_completed
+# ARD-0010 audit-emit binaries are NO LONGER image-baked here. They live at
+# /workspace/.devcontainer/boring-runtime/bin/audit-emit{,-<kind>}, emitted
+# host-side by `boring open` and bind-mounted RO. This keeps the trust-anchor
+# contract uniform with ARD-0006 and ARD-0009: the policy artifacts are
+# unmodifiable from inside the container regardless of sudo (the docker
+# daemon enforces the RO bind-mount; file perms aren't the gate).
 
 WORKDIR /workspace
 USER dev

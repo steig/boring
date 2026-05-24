@@ -56,6 +56,7 @@ The implementation:
 
 - `--learn-mode` flips the iptables `OUTPUT` chain from default-`DROP` to default-`ACCEPT` with a `LOG --log-prefix "BORING-EGRESS-OBSERVE "` rule on every outbound connection that *would have been* dropped under the production rules.
 - Kernel events are read from the container's `/var/log/messages` (or `dmesg`) by an in-container reader, deduplicated by `(dst_host, dst_port)`, and emitted as audit events via the [ARD-0010](ard-0010-audit-log-and-prompt-tracing-infrastructure.md) FIFO.
+  > **Amended by [ARD-0015](ard-0015-ulogd2-sidecar-for-cross-platform-learn-mode.md).** The dmesg-based reader works on Linux native but not on Mac+Orbstack (containers in the Orbstack VM can't see iptables `LOG` entries — different kernel-log namespace). ARD-0015 replaces dmesg with a `ulogd2` sidecar reading NFLOG packets on a shared netns. v0.4 ships ARD-0015's mechanism, not the dmesg one above. The text is preserved for design-evolution context.
 - On container shutdown, `boring open` aggregates the observed hosts, diffs against the current `egress.allow:` in the profile, and writes a proposed update to `.boring/profile.proposed.yaml` next to the profile (host-side) along with a one-line summary to stdout: `Captured 14 new hosts during this session. Review .boring/profile.proposed.yaml and merge into .boring/profile.yaml.`
 - The user reviews and edits by hand — boring never modifies `.boring/profile.yaml` directly (per the [ARD-0006](ard-0006-profile-is-the-trust-anchor.md) "humans edit profiles" principle).
 
