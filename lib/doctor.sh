@@ -69,11 +69,28 @@ doctor_run() {
     fail=1
   fi
 
-  log_step "dbx (ARD-0002)"
+  log_step "dbx (ARD-0002, ARD-0012)"
   if command -v dbx &>/dev/null; then
     local v
     v="$(dbx --version 2>/dev/null | head -1 || echo 'version unknown')"
     log_success "dbx present ($v)"
+    # ARD-0012 needs `--transform` and `--into` on `dbx restore`. Pre-flight
+    # with --help so a profile that uses restore: doesn't fail mid-open.
+    # The help output is the most stable surface; grep is intentional.
+    local help
+    help="$(dbx restore --help 2>&1 || true)"
+    if echo "$help" | grep -q -- "--transform"; then
+      log_success "dbx restore --transform available (ARD-0012 streaming sanitize)"
+    else
+      log_warn "dbx restore --transform NOT available — profiles using restore: with data_sensitivity:sanitized will fail"
+      log_info "  Update dbx: dbx-side feature/restore-transform-into needs to land or you need to update an older dbx"
+    fi
+    if echo "$help" | grep -q -- "--into"; then
+      log_success "dbx restore --into available (ARD-0012 sidecar targeting)"
+    else
+      log_warn "dbx restore --into NOT available — profiles with restore: will fail"
+      log_info "  Update dbx: same dependency as --transform above"
+    fi
   else
     log_error "dbx not found."
     log_info "  Install: curl -fsSL https://raw.githubusercontent.com/steig/dbx/main/install.sh | bash"

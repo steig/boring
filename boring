@@ -3,7 +3,7 @@
 # boring — dev container launcher for wrapped apps
 # https://github.com/steig/boring
 #
-VERSION="0.2.0-dev"
+VERSION="0.3.0-dev"
 #
 # Usage:
 #   boring open <git-url|.>                          Clone or attach a boring-enabled repo
@@ -118,7 +118,11 @@ cmd_open() {
   _cmd_open_start_audit_collector "$profile_json"
 
   log_step "Generating .devcontainer/{docker-compose.yml,devcontainer.json}"
-  compose_generate "$profile_json" "$repo"
+  # --project-name pins the compose project so sidecar container names are
+  # predictable (e.g., <profile>-postgres-1). cmd_run already did this; cmd_open
+  # adopts it here so ARD-0012 dbx restores can target sidecars by name
+  # without scraping `docker ps` heuristics.
+  compose_generate "$profile_json" "$repo" --project-name "$name"
   log_success ".devcontainer/ written"
 
   # ARD-0009: emit the guardrails runtime artifacts (pre-push hook, command
@@ -149,6 +153,12 @@ cmd_open() {
   # to nothing on an empty array under `set -u`. The fully-wrapped variant
   # "${arr[@]+...}" would inject a single empty-string arg, breaking the CLI.
   devcontainer_up --workspace-folder "$repo" ${BORING_REMOTE_ENV_ARGS[@]+"${BORING_REMOTE_ENV_ARGS[@]}"}
+
+  # ARD-0012: fire any restore: entries against the now-running sidecars.
+  # Order matters — restore THEN setup hooks, so migrate/bootstrap_data run
+  # against the prod-shaped data rather than an empty schema. No-op if no
+  # restore: entries declared.
+  _cmd_open_run_restores "$profile_json" "$name"
 
   _cmd_open_verify_setup "$profile_json" "$repo"
 
@@ -280,6 +290,67 @@ _cmd_open_verify_setup() {
     || die "setup re-run failed; inspect the container with: devcontainer exec --workspace-folder \"$workspace\" -- bash"
 
   log_success "setup completed (after re-run)"
+}
+
+# _cmd_open_run_restores <profile-json> <profile-name>
+# ARD-0012 §2: walk the resolved restore: list; for each entry, run
+# `dbx restore <source> --transform=<path> --into <container>` against the
+# compose-managed sidecar container. Honors `when:` semantics:
+#   - first_up: only fire if the marker is absent (idempotent across opens)
+#   - every_up: always fire (use sparingly — bypasses idempotency)
+#   - manual:   never fire here (user invokes `boring restore --refresh`)
+# Marker path: ~/.local/share/boring/restore-state/<profile>/<idx>-<target>.complete
+# Errors abort the open — a failed restore is worse than no restore (setup
+# hooks downstream would run against half-populated data).
+_cmd_open_run_restores() {
+  local profile_json="$1" profile_name="$2"
+
+  local count
+  count="$(jq -r '(.restore // []) | length' <<<"$profile_json")"
+  [[ "$count" -eq 0 ]] && return 0
+
+  require_cmd dbx "Install dbx: curl -fsSL https://raw.githubusercontent.com/steig/dbx/main/install.sh | bash"
+
+  local state_dir="$DATA_DIR/restore-state/$profile_name"
+  mkdir -p "$state_dir"
+
+  log_step "Running restore: entries (ARD-0012)"
+  local idx
+  for (( idx=0; idx<count; idx++ )); do
+    local source target transform when marker
+    source="$(jq -r ".restore[$idx].source" <<<"$profile_json")"
+    target="$(jq -r ".restore[$idx].target" <<<"$profile_json")"
+    transform="$(jq -r ".restore[$idx].transform // empty" <<<"$profile_json")"
+    when="$(jq -r ".restore[$idx].when // \"first_up\"" <<<"$profile_json")"
+    marker="$state_dir/$idx-$target.complete"
+
+    case "$when" in
+      manual)
+        log_info "  [$idx] $source → $target (when: manual — skipping; run boring restore --refresh)"
+        continue ;;
+      first_up)
+        if [[ -f "$marker" ]]; then
+          log_info "  [$idx] $source → $target (when: first_up, marker present — skipping)"
+          continue
+        fi ;;
+      every_up) ;;  # always run
+    esac
+
+    # Compose container naming: <project>-<service>-<index>. We pinned project
+    # to the profile name via --project-name; index is 1 for a single-replica
+    # service. Resolves to e.g. "content-infra-postgres-1".
+    local container="${profile_name}-${target}-1"
+    log_info "  [$idx] $source → $container${transform:+ (transform: $transform)}"
+
+    local dbx_args=("restore" "$source" "--into" "$container")
+    [[ -n "$transform" ]] && dbx_args+=("--transform=$transform")
+    if ! dbx "${dbx_args[@]}"; then
+      die "restore[$idx] failed (source: $source, target: $container). Container left running; fix the source or transform and re-run with: boring restore $profile_name --refresh"
+    fi
+
+    : > "$marker"
+  done
+  log_success "All restore: entries complete"
 }
 
 # _cmd_open_emit_learn_diff <repo>
@@ -505,6 +576,52 @@ cmd_run() {
   exit "$claude_exit"
 }
 
+# cmd_restore [<repo-path>] [--refresh]
+# ARD-0012: manual surface over the restore: pipeline. By default, walks
+# the profile's restore list and re-runs any entries whose marker is missing
+# (idempotent). With --refresh, clears all markers first so every entry
+# re-runs regardless of state. Use when:
+#   - a sanitize script changed (re-run with new transform)
+#   - a fresh snapshot lands upstream (re-pull from dbx)
+#   - manual-when entries need to fire (they never auto-run in cmd_open)
+# The dev containers must be running — restore targets are compose-managed
+# sidecars resolved by name; if they aren't up, dbx --into fails clearly.
+cmd_restore() {
+  local repo="" refresh=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --refresh) refresh=1; shift ;;
+      -*) die "boring restore: unknown flag $1" ;;
+      *) [[ -z "$repo" ]] && repo="$1" || die "boring restore: extra argument $1"; shift ;;
+    esac
+  done
+  repo="${repo:-.}"
+  [[ -d "$repo" ]] || die "boring restore: not a directory: $repo"
+  repo="$(cd "$repo" && pwd)"
+
+  local profile_json name
+  profile_json="$(profile_load "$repo")"
+  name="$(jq -r '.name' <<<"$profile_json")"
+
+  if [[ "$refresh" -eq 1 ]]; then
+    local state_dir="$DATA_DIR/restore-state/$name"
+    log_step "--refresh: clearing restore markers for $name"
+    rm -f "$state_dir"/*.complete 2>/dev/null || true
+  fi
+
+  # _cmd_open_run_restores enforces when: semantics and handles markers.
+  # --refresh just clears markers first; the function does the work.
+  # For manual: entries, --refresh is the only path that fires them.
+  if [[ "$refresh" -eq 1 ]]; then
+    # Temporarily promote manual → every_up so --refresh actually re-runs
+    # them. Without this, manual entries would still skip even after
+    # marker clear (since the case statement skips on when: manual).
+    profile_json="$(jq '(.restore // []) |= map(if .when == "manual" then .when = "every_up" else . end)' <<<"$profile_json")"
+  fi
+
+  _cmd_open_run_restores "$profile_json" "$name"
+}
+
 # cmd_audit security|prompts <profile>
 # Read-only surface over the JSONL audit logs (ARD-0010 §5). `security` always
 # reads from the shared profile-wide file; `prompts` honors the profile's
@@ -551,6 +668,7 @@ boring $VERSION — dev container launcher for wrapped apps
 USAGE
   boring open [--learn-mode] <path>          Open a boring-enabled repo
   boring run "<prompt>" --profile <name>     Headless one-shot Claude (ARD-0013)
+  boring restore [<path>] [--refresh]        Run/re-run restore: entries (ARD-0012)
   boring audit security <profile>            Read profile-shared security events (ARD-0010)
   boring audit prompts  <profile>            Read prompt events (per-user by default)
   boring doctor                              Diagnose environment
@@ -582,6 +700,7 @@ main() {
   case "$subcommand" in
     open)               cmd_open    "$@" ;;
     run)                cmd_run     "$@" ;;
+    restore)            cmd_restore "$@" ;;
     audit)              cmd_audit   "$@" ;;
     doctor)             cmd_doctor  "$@" ;;
     version|-v|--version) cmd_version ;;

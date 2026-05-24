@@ -305,6 +305,70 @@ _profile_validate_json() {
     fi
   fi
 
+  # `restore:` is a list of structured entries (ARD-0012). Each entry needs
+  # source (dbx URI or storage path) + target (must match a service name) +
+  # optional transform + optional when (first_up | every_up | manual).
+  # transform: is REQUIRED when data_sensitivity is "sanitized" — the safety
+  # contract from ARD-0001 §"Security — data sensitivity" that's been
+  # designed-but-no-op since v0.2.
+  local restore_type sensitivity
+  restore_type="$(jq -r '.restore // [] | type' <<<"$json")"
+  sensitivity="$(jq -r '.data_sensitivity // "internal"' <<<"$json")"
+  if [[ "$restore_type" != "array" ]]; then
+    log_error "$source: 'restore' must be a list of restore entries (got: $restore_type)"; _bump
+  elif [[ "$sensitivity" == "internal" ]]; then
+    # ARD-0012 §3: restore is incompatible with data_sensitivity: internal —
+    # internal means "no real data ever in this container."
+    local count
+    count="$(jq -r '(.restore // []) | length' <<<"$json")"
+    if [[ "$count" -gt 0 ]]; then
+      log_error "$source: 'restore' entries require data_sensitivity to be 'sanitized' or 'public' (current: 'internal'). Set data_sensitivity explicitly per ARD-0012."; _bump
+    fi
+  else
+    # Validate each entry's shape and the transform: interlock. Error
+    # messages avoid apostrophes — they'd terminate the bash single-quoted
+    # jq script and bash would then try to execute the angle-bracketed
+    # placeholder names as shell.
+    local rs_bad
+    rs_bad="$(jq -r --arg sens "$sensitivity" '
+      def valid_when: . == "first_up" or . == "every_up" or . == "manual";
+      .restore // []
+      | to_entries | map(
+          . as $entry | .value as $r
+          | if ($r | type) != "object" then "restore[\($entry.key)]: not an object"
+            elif ($r.source // "") == "" then "restore[\($entry.key)]: missing required field: source"
+            elif ($r.target // "") == "" then "restore[\($entry.key)]: missing required field: target"
+            elif (($r.target | type) != "string") or (($r.target | test("^[a-z0-9-]+$")) | not)
+              then "restore[\($entry.key)].target: must be slug-shaped [a-z0-9-]+ (got: " + ($r.target | tostring) + ")"
+            elif (($r.when // "first_up") | valid_when | not)
+              then "restore[\($entry.key)].when: must be one of first_up|every_up|manual (got: " + ($r.when | tostring) + ")"
+            elif ($sens == "sanitized") and (($r.transform // "") == "")
+              then "restore[\($entry.key)]: transform field required when data_sensitivity is sanitized (ARD-0012). Add a transform: path/to/sanitizer or set data_sensitivity: public if the data is non-sensitive."
+            else empty end
+        ) | .[]' <<<"$json")"
+    if [[ -n "$rs_bad" ]]; then
+      while IFS= read -r m; do
+        log_error "$source: $m"; _bump
+      done <<<"$rs_bad"
+    fi
+
+    # Cross-reference: every restore.target must match a service.name.
+    # Single-jq with both lists in scope; no embedded quote escaping.
+    local missing
+    missing="$(jq -r '
+      . as $p
+      | ($p.services // [] | map(.name)) as $names
+      | ($p.restore // []) | to_entries
+      | map(. as $e | select(($names | index($e.value.target)) == null))
+      | map("restore[" + (.key | tostring) + "].target: " + .value.target + " not found in services")
+      | .[]' <<<"$json")"
+    if [[ -n "$missing" ]]; then
+      while IFS= read -r m; do
+        log_error "$source: $m"; _bump
+      done <<<"$missing"
+    fi
+  fi
+
   bad="$(jq -r '(.mounts // []) | map(select(
       type != "string" or
       (split(":") | length < 2 or length > 3) or
@@ -495,6 +559,12 @@ _profile_normalize() {
         services: (($p.services // []) | map(normalize_service)),
         volumes: ($p.volumes // []),
         setup: ($p.setup // []),
+        restore: (($p.restore // []) | map({
+          source: .source,
+          target: .target,
+          transform: (.transform // null),
+          when: (.when // "first_up")
+        })),
         mounts: (($p.mounts // []) | map(parse_mount)),
         forward_ports: ($p.forward_ports // []),
         env: (($p.env // {}) | with_entries(.value |= parse_env_value)),

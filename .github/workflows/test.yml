@@ -1,0 +1,86 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  syntax:
+    name: bash syntax + shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n on every shell file
+        # ubuntu-latest has bash 5; we also want to catch bash-3.2 issues
+        # (macOS default), but `bash -n` only validates parsing under the
+        # current bash. Full bash-3.2 validation is a follow-up (would need
+        # to install bash-3.2 or use a docker layer). For now: catch parse
+        # errors here, rely on the smoke job for runtime behavior.
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            if ! bash -n "$f"; then
+              echo "::error file=$f::bash -n failed"
+              fail=1
+            fi
+          done < <(find boring lib scripts templates/_common/bin tests \
+                     -type f \( -name '*.sh' -o -name 'boring' -o -name 'install-egress' -o -name 'audit-emit' \) \
+                     2>/dev/null)
+          exit $fail
+
+      - name: shellcheck (advisory; exit 0 on findings)
+        # shellcheck is opinionated; we surface findings but don't fail the
+        # build on them yet — too much retrofit to do all at once. Promote
+        # to required (`set -e`) once the existing findings are addressed.
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck --severity=error \
+            boring lib/*.sh scripts/*.sh templates/_common/bin/* templates/_common/boring-bin/* \
+            2>&1 || echo "::warning::shellcheck found issues (advisory)"
+
+  smoke:
+    name: smoke tests
+    runs-on: ubuntu-latest
+    needs: syntax
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install runtime deps
+        # The smoke tests need yq (mikefarah Go variant), jq, docker, and
+        # the devcontainer CLI. ubuntu-latest has docker preinstalled. yq
+        # from the GitHub release (not the snap) to ensure it's the Go one.
+        run: |
+          set -euo pipefail
+          # jq is preinstalled on ubuntu-latest, but be defensive
+          which jq || sudo apt-get update -qq && sudo apt-get install -y jq
+          # mikefarah/yq
+          sudo curl -fsSL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+            -o /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+          # devcontainer CLI
+          npm install -g @devcontainers/cli
+          # Verify
+          yq --version
+          jq --version
+          devcontainer --version
+          docker --version
+
+      - name: boring doctor
+        # Run boring doctor to verify the env. Allowed to exit non-zero — we
+        # don't have dbx in CI (it's a separate install) so the dbx check
+        # will fail. Capture for visibility; don't gate on it yet.
+        run: |
+          export PATH="$PWD:$PATH"
+          ./boring doctor || echo "::warning::boring doctor reported missing optional deps (likely dbx — not installed in CI)"
+
+      - name: run smoke tests
+        env:
+          NO_COLOR: "1"
+        run: |
+          export PATH="$PWD:$PATH"
+          scripts/test.sh -v
