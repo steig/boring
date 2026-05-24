@@ -6,11 +6,12 @@
 VERSION="0.2.0-dev"
 #
 # Usage:
-#   boring open <git-url|.>           Clone or attach a boring-enabled repo
-#   boring run <profile> --task <t>   Headless task run (v1.x)
-#   boring doctor                     Diagnose environment
-#   boring version                    Print version
-#   boring help                       Print this help
+#   boring open <git-url|.>                          Clone or attach a boring-enabled repo
+#   boring run "<prompt>" --profile <name> [--repo <path>]
+#                                                    Headless one-shot Claude (ARD-0013)
+#   boring doctor                                    Diagnose environment
+#   boring version                                   Print version
+#   boring help                                      Print this help
 #
 
 set -euo pipefail
@@ -301,9 +302,207 @@ _cmd_open_emit_learn_diff() {
   rm -f "$tmp"
 }
 
+# ============================================================================
+# cmd_run — headless one-shot Claude invocation in a profile-scoped sandbox
+# Per ARD-0013. Fresh container per invocation, identical secret code path to
+# cmd_open, same trust-anchor / guardrails posture (everything baked into the
+# image applies — there is no headless-only relaxation).
+# ============================================================================
+
+# _cmd_run_compose_project_name <profile-name> -> echoes "boring-run-<profile>-<suffix>"
+# 8-char hex suffix from /dev/urandom keeps invocations from colliding when
+# multiple `boring run` jobs target the same profile concurrently and means
+# nothing about it leaks into the user-facing namespace.
+_cmd_run_compose_project_name() {
+  local profile_name="$1"
+  local suffix
+  suffix="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  echo "boring-run-${profile_name}-${suffix}"
+}
+
+# _cmd_run_resolve_secrets <profile-json> -> populates the global
+# _CMD_RUN_REMOTE_ENV_ARGS array with `--remote-env KEY=VALUE` pairs for each
+# secret URI in env. Resolution happens in memory; resolved values are NEVER
+# written to disk. Fails fast on any unresolvable URI BEFORE any container is
+# brought up. Per ARD-0013 §3, this is the same code path cmd_open will use;
+# the shared name lives here pending the cmd_open hardening slice (ARD-0009/10).
+declare -a _CMD_RUN_REMOTE_ENV_ARGS=()
+_cmd_run_resolve_secrets() {
+  local profile_json="$1"
+  _CMD_RUN_REMOTE_ENV_ARGS=()
+
+  # Iterate every env entry classified as kind=secret by profile_normalize.
+  # jq -r emits one tab-delimited "KEY\tURI" line per secret; safe because
+  # env names are slug-shaped and secret URIs don't contain tabs.
+  local secret_lines
+  secret_lines="$(jq -r '
+    .env | to_entries
+    | map(select(.value.kind == "secret"))
+    | .[]
+    | "\(.key)\t\(.value.uri)"
+  ' <<<"$profile_json")"
+
+  [[ -z "$secret_lines" ]] && return 0
+
+  local key uri value
+  while IFS=$'\t' read -r key uri; do
+    [[ -z "$key" ]] && continue
+    log_info "Resolving secret: $key (uri: $uri)"
+    if ! value="$(secret_resolve "$uri")"; then
+      die "boring run: failed to resolve secret for env.$key (uri: $uri). Pre-flight aborted; no container was started."
+    fi
+    [[ -z "$value" ]] && die "boring run: secret_resolve returned empty value for env.$key (uri: $uri)."
+    # --remote-env is the devcontainer CLI flag that injects KEY=VAL into the
+    # container env at exec time without persisting to docker-compose.yml.
+    _CMD_RUN_REMOTE_ENV_ARGS+=("--remote-env" "${key}=${value}")
+  done <<<"$secret_lines"
+}
+
+# _cmd_run_teardown <project-name> <workspace>
+# Tear down the one-shot compose stack. `-v` removes named volumes so the next
+# `boring run` against the same profile starts from a clean slate. Safe to call
+# multiple times (idempotent at the docker layer), but we reset the trap on
+# entry so a SIGINT-followed-by-EXIT cascade doesn't run teardown twice and
+# spam the log.
+_cmd_run_teardown() {
+  trap - EXIT INT TERM
+  local project_name="$1"
+  local workspace="$2"
+  [[ -z "$project_name" ]] && return 0
+  [[ -d "$workspace/.devcontainer" ]] || return 0
+  log_step "Tearing down container (project: $project_name)"
+  (
+    cd "$workspace"
+    docker compose \
+      --project-name "$project_name" \
+      --project-directory .devcontainer \
+      -f .devcontainer/docker-compose.yml \
+      down -v --remove-orphans 2>/dev/null
+  ) || log_warn "boring run: teardown encountered an error (project $project_name); may need manual 'docker compose --project-name $project_name down -v'."
+}
+
+# _cmd_run_print_help — usage for `boring run`
+_cmd_run_print_help() {
+  cat <<EOF
+boring run — headless one-shot Claude invocation (ARD-0013)
+
+USAGE
+  boring run "<claude-prompt>" --profile <name> [--repo <path>]
+
+ARGUMENTS
+  <claude-prompt>     Prompt passed to Claude Code's headless mode (claude -p).
+                      Must be a single positional argument; quote multi-word.
+
+OPTIONS
+  --profile <name>    Required. Slug-shaped name matching the loaded profile's
+                      \`name:\` field. Used to scope the temporary compose project.
+  --repo <path>       Optional. Path to the boring-enabled repo containing
+                      \`.boring/profile.yaml\`. Defaults to the current directory.
+  -h, --help          Print this help and exit.
+
+BEHAVIOR
+  1. Loads .boring/profile.yaml from --repo (or .).
+  2. Resolves every secret:// URI in env IN MEMORY. Fails fast on any error
+     before any container is started.
+  3. Generates a one-shot compose stack with a unique project name
+     (boring-run-<profile>-<random-suffix>).
+  4. Brings the container up via \`devcontainer up --remove-existing-container\`,
+     injecting resolved secrets as \`--remote-env KEY=VAL\`.
+  5. Invokes Claude headlessly inside the container with the prompt.
+  6. Streams Claude stdout to this terminal. Tears down on exit (including
+     SIGINT / SIGTERM). \`-v\` is passed to \`docker compose down\` so named
+     volumes are removed — fresh state per invocation, by design.
+  7. Exits with Claude's exit code.
+
+EOF
+}
+
 cmd_run() {
-  log_warn "boring run: not yet implemented (v0 skeleton)"
-  exit 1
+  local prompt=""
+  local profile_arg=""
+  local repo="."
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)    _cmd_run_print_help; return 0 ;;
+      --profile)
+        [[ $# -ge 2 ]] || die "boring run: --profile requires a value"
+        profile_arg="$2"; shift 2 ;;
+      --repo)
+        [[ $# -ge 2 ]] || die "boring run: --repo requires a value"
+        repo="$2"; shift 2 ;;
+      --)           shift; prompt="${1:-$prompt}"; shift || true ;;
+      -*)           die "boring run: unknown flag: $1 (try: boring run --help)" ;;
+      *)
+        if [[ -z "$prompt" ]]; then
+          prompt="$1"; shift
+        else
+          die "boring run: unexpected positional argument: $1 (the prompt must be a single quoted string)"
+        fi
+        ;;
+    esac
+  done
+
+  [[ -z "$prompt" ]] && { _cmd_run_print_help >&2; die "boring run: missing prompt argument"; }
+  [[ -z "$profile_arg" ]] && die "boring run: --profile is required (try: boring run --help)"
+  [[ "$profile_arg" =~ ^[a-z0-9-]+$ ]] || die "boring run: --profile must be slug-shaped [a-z0-9-]+ (got: $profile_arg)"
+  [[ -d "$repo" ]] || die "boring run: --repo not a directory: $repo"
+  repo="$(cd "$repo" && pwd)"
+
+  log_step "Loading profile from $repo/.boring/profile.yaml"
+  local profile_json
+  profile_json="$(profile_load "$repo")"
+
+  local profile_name
+  profile_name="$(jq -r '.name' <<<"$profile_json")"
+  if [[ "$profile_name" != "$profile_arg" ]]; then
+    die "boring run: --profile mismatch — profile.yaml declares name '$profile_name' but --profile was '$profile_arg'"
+  fi
+  log_info "Profile: $profile_name"
+
+  log_step "Pre-flighting secret URIs (in memory; no disk write)"
+  _cmd_run_resolve_secrets "$profile_json"
+  # Each secret pushes two array elements (--remote-env + KEY=VAL), so divide
+  # the array length by 2 for the user-visible count.
+  log_success "Secrets resolved: $(( ${#_CMD_RUN_REMOTE_ENV_ARGS[@]} / 2 )) entries (--remote-env pairs prepared)"
+
+  local project_name
+  project_name="$(_cmd_run_compose_project_name "$profile_name")"
+  log_info "Compose project: $project_name"
+
+  # Register teardown trap BEFORE we bring anything up. Covers normal exit,
+  # SIGINT (Ctrl-C), SIGTERM, and ERR (set -e induced failures). We can't trap
+  # SIGKILL — detection of orphans on that path is via `docker ps` filtering on
+  # the unique project name (`boring-run-*`).
+  trap '_cmd_run_teardown "$project_name" "$repo"' EXIT INT TERM
+
+  log_step "Generating .devcontainer/{docker-compose.yml,devcontainer.json} (project: $project_name)"
+  compose_generate "$profile_json" "$repo" --project-name "$project_name"
+  log_success ".devcontainer/ written"
+
+  log_step "Bringing dev container up (devcontainer up --remove-existing-container)"
+  # The `${arr[@]+"${arr[@]}"}` pattern is the canonical defense against the
+  # bash 3.2 "unbound variable" failure on empty arrays under `set -u`. If the
+  # profile has no secrets, _CMD_RUN_REMOTE_ENV_ARGS is empty and we expand to
+  # nothing; if it has secrets, we expand to the pairs.
+  devcontainer_up \
+    --workspace-folder "$repo" \
+    --remove-existing-container \
+    ${_CMD_RUN_REMOTE_ENV_ARGS[@]+"${_CMD_RUN_REMOTE_ENV_ARGS[@]}"}
+
+  log_step "Running Claude headlessly inside container"
+  # Claude Code's non-interactive mode: `claude -p "<prompt>"` (per ARD-0013 §2
+  # and the Claude Code CLI docs). Output streams to this terminal as Claude
+  # produces it; exit code propagates to `boring`.
+  local claude_exit=0
+  devcontainer_exec \
+    --workspace-folder "$repo" \
+    -- claude -p "$prompt" || claude_exit=$?
+
+  log_info "Claude exited with code: $claude_exit"
+  # Teardown runs via the EXIT trap; exit with Claude's code to preserve
+  # CI-friendly exit semantics.
+  exit "$claude_exit"
 }
 
 # cmd_audit security|prompts <profile>
@@ -350,13 +549,13 @@ cmd_help() {
 boring $VERSION — dev container launcher for wrapped apps
 
 USAGE
-  boring open [--learn-mode] <path>  Open a boring-enabled repo
-  boring run <profile> --task <t>    Headless task run (v1.x)
-  boring audit security <profile>    Read profile-shared security events (ARD-0010)
-  boring audit prompts  <profile>    Read prompt events (per-user by default)
-  boring doctor                      Diagnose environment
-  boring version                     Print version
-  boring help                        Print this help
+  boring open [--learn-mode] <path>          Open a boring-enabled repo
+  boring run "<prompt>" --profile <name>     Headless one-shot Claude (ARD-0013)
+  boring audit security <profile>            Read profile-shared security events (ARD-0010)
+  boring audit prompts  <profile>            Read prompt events (per-user by default)
+  boring doctor                              Diagnose environment
+  boring version                             Print version
+  boring help                                Print this help
 
 FLAGS
   --learn-mode   Per ARD-0011, install iptables LOG-only egress rules and

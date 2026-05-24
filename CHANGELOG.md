@@ -49,6 +49,13 @@ All notable changes to boring are documented here. Format follows [Keep a Change
   - `settings.json` — the trust-anchor `deny` rules (moved out of inline `printf` in the Dockerfile into a real JSON file for readability).
   - `skills/grill-me/SKILL.md` — `/grill-me` available to the user inside the container.
 
+### Added (v0.6 headless `boring run` slice — 2026-05-24)
+
+- **[ARD-0013](docs/ards/ard-0013-headless-boring-run.md)** — headless `boring run` for one-shot Claude invocations in a profile-scoped sandbox. Fresh container per invocation, identical secret code path to `boring open`, same trust-anchor and guardrails posture.
+- **`boring run "<prompt>" --profile <name> [--repo <path>]`** — replaces the v0.1 stub. Pre-flights all `secret://` URIs in memory (no disk write) and fails fast on resolution errors before any container starts. Generates a unique compose project name (`boring-run-<profile>-<8-hex-suffix>`) so a one-shot run can't collide with an interactive `boring open` of the same profile. Brings up via `devcontainer up --remove-existing-container` with resolved secrets injected as `--remote-env KEY=VAL` (devcontainer-CLI surface; never written to docker-compose.yml). Invokes `claude -p "<prompt>"` inside the container; streams stdout to the host; exits with Claude's exit code. SIGINT / SIGTERM / normal-exit teardown all converge on `docker compose --project-name … down -v --remove-orphans` (the `-v` removes the run's named volumes, which is the reproducibility property).
+- **`lib/compose.sh`** — `compose_generate` now accepts an optional `--project-name <name>` flag that writes a top-level `name:` field into the generated `docker-compose.yml`. Used by `boring run` only; `boring open` continues to omit it.
+- **`tests/smoke_run.sh`** — orchestration smoke for `cmd_run`. Uses on-PATH mocks for `op`, `claude`, `devcontainer`, and `docker` (each logs invocation to a JSON-Lines file the assertions check) so the smoke runs without docker / @devcontainers/cli installed and without paying the cost of an actual Claude invocation. Covers: happy path (secret resolution → up → claude exec → teardown), secret pre-flight failure (no container starts), SIGINT mid-run (teardown still fires), `--profile` mismatch rejection, non-slug `--profile` rejection, no-secrets profile (empty `--remote-env` arg list), and `--help`.
+
 ### Known UX gaps (filed for next slices)
 
 - `boring open` does not auto-recreate the container when the compose file changes. Workaround: `docker compose --project-name <name> down` before re-running.
