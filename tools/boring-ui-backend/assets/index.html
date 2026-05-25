@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>boring chat</title>
+  <link rel="stylesheet" href="chat.css">
+</head>
+<body>
+  <header class="header">
+    <div class="brand">boring <span class="slug" id="slug">project</span></div>
+    <div class="actions">
+      <button class="btn" id="save-btn">Save</button>
+    </div>
+  </header>
+
+  <main class="panes">
+    <section class="chat-pane">
+      <div class="thread" id="thread"></div>
+      <form class="composer" id="composer" autocomplete="off">
+        <input id="input" type="text" placeholder="Ask the AI to change something..." autocomplete="off" />
+        <button type="submit" class="btn primary">Send</button>
+      </form>
+    </section>
+
+    <section class="preview-pane">
+      <iframe id="preview" src="preview/" title="preview"></iframe>
+    </section>
+  </main>
+
+  <!-- Save dialog -->
+  <dialog id="save-dialog" class="dialog">
+    <form method="dialog" id="save-form">
+      <h2>Save your work</h2>
+
+      <label>Title
+        <input type="text" id="save-title" required />
+      </label>
+
+      <label>Description
+        <textarea id="save-description" rows="5"></textarea>
+      </label>
+
+      <label>Branch name
+        <input type="text" id="save-branch" />
+      </label>
+
+      <label>Reviewers (comma-separated)
+        <input type="text" id="save-reviewers" placeholder="alice,bob" />
+      </label>
+
+      <label class="checkbox">
+        <input type="checkbox" id="save-draft" checked />
+        Open as draft
+      </label>
+
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="save-cancel">Cancel</button>
+        <button type="submit" class="btn primary">Save and share</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Toast -->
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="chat.js"></script>
+</body>
+</html>
