@@ -399,6 +399,7 @@ ${build_args_block}"
 
   # Volumes: source bind-mount + ARD-0009 guardrails-runtime RO remount +
   # ARD-0010 audit FIFO + ARD-0011 egress allowlist (when enabled) +
+  # ARD-0028 AGENTS.md RO bind into OpenCode's config dir +
   # each profile mount entry.
   # `..` resolves to the repo root because the compose file lives at
   # <repo>/.devcontainer/docker-compose.yml. Don't use `.` here — it would
@@ -407,10 +408,16 @@ ${build_args_block}"
   # the more specific second entry re-mounts it read-only (Docker honors the
   # narrower mount), which is what makes the host-writes-container-reads-RO
   # trust-anchor contract of ARD-0009 hold.
+  # Per ARD-0028 the codegen'd AGENTS.md lives at <repo>/.boring/codegen/AGENTS.md
+  # and is re-bound at /home/dev/.config/opencode/AGENTS.md (RO) so OpenCode
+  # discovers it via its native convention. The matching CLAUDE.md is read
+  # in-place from the workspace bind-mount via the image-baked @-include
+  # wiring file (ARD-0017 §3); no separate compose mount needed for Claude.
   local volumes
   volumes="$(jq -r --arg fifo "$audit_fifo_host" --argjson extra "$extra_mounts_json" '
     ["..:/workspace:cached",
      "../.devcontainer/boring-runtime:/workspace/.devcontainer/boring-runtime:ro",
+     "../.boring/codegen/AGENTS.md:/home/dev/.config/opencode/AGENTS.md:ro",
      ($fifo + ":/var/log/boring/events.fifo")] +
     (.mounts | map(
       if .ro then "\(.host):\(.container):ro" else "\(.host):\(.container)" end

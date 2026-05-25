@@ -21,12 +21,20 @@
 # version) when a field is renamed or removed in a breaking way.
 BORING_SCHEMA_VERSION="1"
 
-# Deprecation table for v1 schema: "<old_field>:<new_field>" pairs.
-# _profile_rewrite_deprecated walks this list, warns on each old field present
-# in the profile, and renames it in-memory to the new field. v2 schema will
-# error instead of warning. Add entries here, not by editing the rewriter.
+# Deprecation table for v1 schema: "<old_field>:<new_field>" pairs (top-level
+# fields only). _profile_rewrite_deprecated walks this list, warns on each old
+# field present in the profile, and renames it in-memory to the new field. v2
+# schema will error instead of warning. Add entries here, not by editing the
+# rewriter.
 _BORING_PROFILE_DEPRECATIONS_V1=(
   "theme:preset"
+)
+
+# Per ARD-0026: guardrails.allowed_claude_tools: is a deprecated alias for
+# guardrails.allowed_tools:. The nested location means the top-level deprecation
+# table does not apply; _profile_rewrite_guardrails_deprecated handles it.
+_BORING_GUARDRAILS_DEPRECATIONS_V1=(
+  "allowed_claude_tools:allowed_tools"
 )
 
 require_cmd_yq() {
@@ -79,6 +87,7 @@ profile_load() {
 
   _profile_check_version "$merged_json" "$base"
   merged_json="$(_profile_rewrite_deprecated "$merged_json" "$base")"
+  merged_json="$(_profile_rewrite_guardrails_deprecated "$merged_json" "$base")"
   _profile_validate_json "$merged_json" "$base" || die "profile_load: schema validation failed"
   _profile_normalize "$merged_json"
 }
@@ -141,6 +150,38 @@ _profile_rewrite_deprecated() {
       log_warn "$source: field '$old:' is deprecated; rename to '$new:'."
       json="$(jq --arg o "$old" --arg n "$new" '. + {($n): .[$o]} | del(.[$o])' <<<"$json")"
     fi
+  done
+
+  printf '%s' "$json"
+}
+
+# _profile_rewrite_guardrails_deprecated <json> <source-label>
+# Per ARD-0026: walks _BORING_GUARDRAILS_DEPRECATIONS_V1 against the nested
+# guardrails: block. Same warn-and-rename semantics as the top-level rewriter;
+# conflicts (both old and new set under guardrails:) are a hard error (the
+# top-level rewriter just warns, but tool allowlists are security-relevant so
+# we refuse the ambiguity rather than silently dropping one).
+_profile_rewrite_guardrails_deprecated() {
+  local json="$1" source="$2"
+  local pair old new
+
+  for pair in "${_BORING_GUARDRAILS_DEPRECATIONS_V1[@]}"; do
+    old="${pair%%:*}"
+    new="${pair##*:}"
+    local has_old has_new
+    has_old="$(jq --arg k "$old" '.guardrails // {} | has($k)' <<<"$json")"
+    has_new="$(jq --arg k "$new" '.guardrails // {} | has($k)' <<<"$json")"
+
+    [[ "$has_old" != "true" ]] && continue
+
+    if [[ "$has_new" == "true" ]]; then
+      die "$source: guardrails.$old: and guardrails.$new: are both set. Remove the deprecated guardrails.$old: (ARD-0026)."
+    fi
+
+    log_warn "$source: field 'guardrails.$old:' is deprecated; rename to 'guardrails.$new:' (ARD-0026). Backward-compat alias will be removed in v2."
+    json="$(jq --arg o "$old" --arg n "$new" '
+      .guardrails = ((.guardrails // {}) + {($n): (.guardrails[$o])} | del(.[$o]))
+    ' <<<"$json")"
   done
 
   printf '%s' "$json"
@@ -412,6 +453,132 @@ _profile_validate_json() {
     done <<<"$bad"
   fi
 
+  # ARD-0026 + ARD-0022: allowed_paths: / disallowed_paths: are top-level lists
+  # of glob patterns. Each entry must be a non-empty string; bare leading
+  # tildes and `..` are rejected (paths are repo-relative, not host-relative).
+  local path_field_type
+  for field in allowed_paths disallowed_paths; do
+    path_field_type="$(jq -r --arg f "$field" '.[$f] // [] | type' <<<"$json")"
+    if [[ "$path_field_type" != "array" ]]; then
+      log_error "$source: '$field' must be a list of glob patterns (got: $path_field_type)"; _bump
+      continue
+    fi
+    bad="$(jq -r --arg f "$field" '(.[$f] // []) | map(select(
+        type != "string" or . == "" or startswith("/") or startswith("~") or contains("..")
+      )) | .[]' <<<"$json")"
+    if [[ -n "$bad" ]]; then
+      while IFS= read -r p; do
+        log_error "$source: $field entry must be a non-empty repo-relative glob (got: $p)"; _bump
+      done <<<"$bad"
+    fi
+  done
+
+  # ARD-0022 §6: preview_url: and preview_urls: are mutually exclusive. preview_url
+  # is a single string; preview_urls is a list of {name, url} objects.
+  local has_pu has_pus
+  has_pu="$(jq -r 'has("preview_url")' <<<"$json")"
+  has_pus="$(jq -r 'has("preview_urls")' <<<"$json")"
+  if [[ "$has_pu" == "true" && "$has_pus" == "true" ]]; then
+    log_error "$source: 'preview_url' and 'preview_urls' are mutually exclusive"; _bump
+  fi
+  if [[ "$has_pu" == "true" ]]; then
+    local pu pu_type
+    pu_type="$(jq -r '.preview_url | type' <<<"$json")"
+    pu="$(jq -r '.preview_url // ""' <<<"$json")"
+    if [[ "$pu_type" != "string" || -z "$pu" ]]; then
+      log_error "$source: 'preview_url' must be a non-empty string (got type: $pu_type)"; _bump
+    fi
+  fi
+  if [[ "$has_pus" == "true" ]]; then
+    local pus_type
+    pus_type="$(jq -r '.preview_urls | type' <<<"$json")"
+    if [[ "$pus_type" != "array" ]]; then
+      log_error "$source: 'preview_urls' must be a list of {name, url} objects (got: $pus_type)"; _bump
+    else
+      bad="$(jq -r '.preview_urls | to_entries | map(
+          . as $e | .value as $v
+          | if ($v | type) != "object" then "preview_urls[\($e.key)]: not an object"
+            elif (($v.name // "") == "") or (($v.name | type) != "string")
+              then "preview_urls[\($e.key)]: missing or non-string name"
+            elif (($v.url // "") == "") or (($v.url | type) != "string")
+              then "preview_urls[\($e.key)]: missing or non-string url"
+            else empty end
+        ) | .[]' <<<"$json")"
+      if [[ -n "$bad" ]]; then
+        while IFS= read -r m; do
+          log_error "$source: $m"; _bump
+        done <<<"$bad"
+      fi
+    fi
+  fi
+
+  # ARD-0022 §7: save: block. All fields optional; type-check those present.
+  # reviewers_from: and reviewers: are mutually exclusive.
+  local save_type
+  save_type="$(jq -r '.save // null | if . == null then "null" else type end' <<<"$json")"
+  if [[ "$save_type" != "null" && "$save_type" != "object" ]]; then
+    log_error "$source: 'save' must be a map (got: $save_type)"; _bump
+  elif [[ "$save_type" == "object" ]]; then
+    local has_rf has_rl
+    has_rf="$(jq -r '.save | has("reviewers_from")' <<<"$json")"
+    has_rl="$(jq -r '.save | has("reviewers")' <<<"$json")"
+    if [[ "$has_rf" == "true" && "$has_rl" == "true" ]]; then
+      log_error "$source: 'save.reviewers_from' and 'save.reviewers' are mutually exclusive"; _bump
+    fi
+    bad="$(jq -r '
+      .save as $s
+      | [
+          (if ($s | has("target_branch"))   and (($s.target_branch | type)   != "string") then "save.target_branch must be a string" else empty end),
+          (if ($s | has("reviewers_from"))  and ($s.reviewers_from != "codeowners")       then "save.reviewers_from must be \"codeowners\" (got: " + ($s.reviewers_from | tostring) + ")" else empty end),
+          (if ($s | has("draft_by_default"))and (($s.draft_by_default | type) != "boolean")then "save.draft_by_default must be a boolean" else empty end),
+          (if ($s | has("branch_prefix"))   and (($s.branch_prefix | type)   != "string") then "save.branch_prefix must be a string" else empty end),
+          (if ($s | has("pr_template"))     and (($s.pr_template | type)     != "string") then "save.pr_template must be a string" else empty end),
+          (if ($s | has("reviewers"))       and (($s.reviewers | type)       != "array")  then "save.reviewers must be a list of strings" else empty end)
+        ] | .[]' <<<"$json")"
+    if [[ -n "$bad" ]]; then
+      while IFS= read -r m; do
+        log_error "$source: $m"; _bump
+      done <<<"$bad"
+    fi
+    # If reviewers: is a list, every entry must be a non-empty string.
+    if [[ "$has_rl" == "true" ]]; then
+      bad="$(jq -r '(.save.reviewers // []) | map(select(type != "string" or . == "")) | .[]' <<<"$json")"
+      if [[ -n "$bad" ]]; then
+        while IFS= read -r r; do
+          log_error "$source: save.reviewers entry must be a non-empty string (got: $r)"; _bump
+        done <<<"$bad"
+      fi
+    fi
+  fi
+
+  # ARD-0022 §3 + §7.3: wip_branch_ttl: / wip_branch_grace: are duration strings
+  # like 7d, 24h, 30m. Accept Nd|Nh|Nm patterns (integer + unit). Reject anything
+  # else; codegen depends on the parsed shape.
+  local dur
+  for field in wip_branch_ttl wip_branch_grace; do
+    dur="$(jq -r --arg f "$field" '.[$f] // ""' <<<"$json")"
+    if [[ -n "$dur" && ! "$dur" =~ ^[0-9]+[dhm]$ ]]; then
+      log_error "$source: $field must be a duration like 7d, 24h, or 30m (got: $dur)"; _bump
+    fi
+  done
+
+  # ARD-0026: guardrails.allowed_tools: must be a list of canonical-name strings.
+  # The deprecated guardrails.allowed_claude_tools: alias is rewritten to
+  # allowed_tools: in _profile_rewrite_guardrails_deprecated; by validate time
+  # only allowed_tools: should be set.
+  local at_type
+  at_type="$(jq -r '.guardrails.allowed_tools // [] | type' <<<"$json")"
+  if [[ "$at_type" != "array" ]]; then
+    log_error "$source: guardrails.allowed_tools must be a list of canonical tool names (got: $at_type)"; _bump
+  else
+    bad="$(jq -r '(.guardrails.allowed_tools // []) | map(select(type != "string" or . == "")) | .[]' <<<"$json")"
+    if [[ -n "$bad" ]]; then
+      while IFS= read -r t; do
+        log_error "$source: guardrails.allowed_tools entry must be a non-empty string (got: $t)"; _bump
+      done <<<"$bad"
+    fi
+  fi
+
   [[ "$errors" -eq 0 ]]
 }
 
@@ -536,6 +703,28 @@ _profile_normalize() {
       else .
       end;
 
+    # ARD-0022 §6: preview_url/preview_urls normalized into a single shape
+    # downstream code can read: a list of {name, url}. preview_url folds into
+    # a one-element list with name="default".
+    def normalize_preview:
+      if $p | has("preview_urls") then ($p.preview_urls // [])
+      elif $p | has("preview_url") then [{name: "default", url: $p.preview_url}]
+      else [] end;
+
+    # ARD-0022 §7: save block defaults. All keys present in output; missing
+    # input keys take the documented defaults. reviewers/reviewers_from are
+    # mutually exclusive (validator enforces); the unset one is null here.
+    def normalize_save:
+      ($p.save // {}) as $s
+      | {
+          target_branch:    ($s.target_branch    // "main"),
+          reviewers_from:   ($s.reviewers_from   // null),
+          reviewers:        ($s.reviewers        // null),
+          draft_by_default: (if $s | has("draft_by_default") then $s.draft_by_default else true end),
+          branch_prefix:    ($s.branch_prefix    // "marketer/"),
+          pr_template:      ($s.pr_template      // null)
+        };
+
     ($p.stack.dockerfile // null) as $df
     | ($p.stack.base_image // null) as $bi
     | ($p.preset // null) as $preset
@@ -573,8 +762,22 @@ _profile_normalize() {
         guardrails: {
           forbid_branches: ($p.guardrails.forbid_branches // []),
           forbid_commands: ($p.guardrails.forbid_commands // []),
-          allowed_claude_tools: ($p.guardrails.allowed_claude_tools // [])
+          # Per ARD-0026: allowed_tools is canonical; allowed_claude_tools is
+          # kept as a mirror for one minor-version cycle so existing codegen
+          # that reads allowed_claude_tools keeps working unchanged.
+          allowed_tools: ($p.guardrails.allowed_tools // []),
+          allowed_claude_tools: ($p.guardrails.allowed_tools // [])
         },
+        # ARD-0026 + ARD-0022: path allowlist as profile-level lists. Preset
+        # defaults are merged in guardrails_resolve_paths (lib/guardrails.sh)
+        # at codegen time — not here, to keep normalize a pure data shaping.
+        allowed_paths:    ($p.allowed_paths    // []),
+        disallowed_paths: ($p.disallowed_paths // []),
+        # ARD-0022 §6 + §7: boring-ui session/save fields.
+        preview_urls: normalize_preview,
+        save: normalize_save,
+        wip_branch_ttl:   ($p.wip_branch_ttl   // "7d"),
+        wip_branch_grace: ($p.wip_branch_grace // "24h"),
         audit: {
           prompts: ($p.audit.prompts // "per_user")
         },

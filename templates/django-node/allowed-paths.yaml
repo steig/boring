@@ -1,0 +1,10 @@
+# Per ARD-0022 §5.2: default path allowlist for the django-node preset.
+# Migrations explicitly off.
+allowed_paths:
+  - templates/
+  - static/
+  - fixtures/
+  - app/copy/
+  - app/content/
+  - frontend/src/
+  - frontend/public/

@@ -9,6 +9,9 @@ VERSION="0.6.0-dev"
 #   boring open <git-url|.>                          Clone or attach a boring-enabled repo
 #   boring run "<prompt>" --profile <name> [--repo <path>]
 #                                                    Headless one-shot Claude (ARD-0013)
+#   boring wip {start|commit|discard} <profile|.>    WIP-branch lifecycle (ARD-0022 §3)
+#   boring save <profile|.>                          Promote WIP branch to PR (ARD-0022 §7)
+#   boring proxy <subcommand>                        Host-side reverse proxy (ARD-0021, v1.x)
 #   boring doctor                                    Diagnose environment
 #   boring version                                   Print version
 #   boring help                                      Print this help
@@ -34,9 +37,11 @@ source "$LIB_DIR/dbx.sh"
 source "$LIB_DIR/devcontainer.sh"
 source "$LIB_DIR/profile.sh"
 source "$LIB_DIR/compose.sh"
+source "$LIB_DIR/guardrails.sh"
 source "$LIB_DIR/egress.sh"
 source "$LIB_DIR/doctor.sh"
 source "$LIB_DIR/audit.sh"
+source "$LIB_DIR/saver.sh"
 
 # ============================================================================
 # Globals
@@ -136,6 +141,15 @@ cmd_open() {
   log_step "Generating .devcontainer/boring-runtime/ (ARD-0009 guardrails)"
   _compose_emit_guardrails_runtime "$profile_json" "$repo"
   log_success "boring-runtime/ written"
+
+  # ARD-0026 + ARD-0028: harness-agnostic codegen — CLAUDE.md, AGENTS.md, and
+  # the OpenCode permission config — into .boring/codegen/. Same trust-anchor
+  # pattern (host-writes, container-reads-RO via the workspace bind-mount; the
+  # AGENTS.md additionally rebinds at /home/dev/.config/opencode/AGENTS.md via
+  # compose.sh's volumes block).
+  log_step "Generating .boring/codegen/ (ARD-0026 + ARD-0028)"
+  guardrails_emit_codegen_dir "$profile_json" "$repo"
+  log_success ".boring/codegen/ written"
 
   # ARD-0011: set BORING_EGRESS_MODE so the in-container install-egress
   # entrypoint picks it up. Only meaningful when egress.allow is non-empty
@@ -663,6 +677,192 @@ cmd_doctor() {
   doctor_run "$@"
 }
 
+# ============================================================================
+# cmd_wip — WIP-branch lifecycle (ARD-0022 §3)
+# Designed to be invoked both directly by engineers and shelled out from the
+# in-container boring-ui backend per turn. Subcommands: start, commit, discard.
+# ============================================================================
+
+_cmd_wip_print_help() {
+  cat <<EOF
+boring wip — WIP-branch lifecycle (ARD-0022 §3)
+
+USAGE
+  boring wip start   <profile|.> [--marketer <name>] [--ts <ts>] [--base <branch>]
+  boring wip commit  <profile|.> --prompt <text>
+  boring wip discard <profile|.> [--force]
+
+SUBCOMMANDS
+  start    Create (or check out) a WIP branch for the session.
+  commit   Stage all changes and commit the current turn (AI-summarized msg).
+  discard  Delete the current WIP branch (refuses if unsaved commits unless --force).
+
+OPTIONS
+  --marketer <name>  Marketer username (default: \$USER).
+  --ts <ts>          Session-resumed-at timestamp (default: now, format: YYYYMMDDHHMMSS).
+  --base <branch>    Base branch for the WIP (default: save.target_branch or main).
+  --prompt <text>    Prompt text used to derive the commit message subject.
+  --force            For 'discard': delete even if commits are unsaved.
+
+EOF
+}
+
+# _cmd_wip_resolve_repo_and_profile <arg>
+# Mirrors cmd_save: accepts "." (cwd repo) or a path; returns repo + profile_json
+# via two globals (bash 3.2 has no map returns).
+_CMD_WIP_REPO=""
+_CMD_WIP_PROFILE_JSON=""
+_cmd_wip_resolve_repo_and_profile() {
+  local target="${1:-.}"
+  [[ -d "$target" ]] || die "boring wip: not a directory: $target"
+  _CMD_WIP_REPO="$(cd "$target" && pwd)"
+  _CMD_WIP_PROFILE_JSON="$(profile_load "$_CMD_WIP_REPO")"
+}
+
+cmd_wip() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    -h|--help|"") _cmd_wip_print_help; [[ -z "$sub" ]] && return 1 || return 0 ;;
+  esac
+
+  local target=""
+  local marketer="${USER:-marketer}"
+  local ts=""
+  local base=""
+  local prompt=""
+  local force=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --marketer) [[ $# -ge 2 ]] || die "boring wip: --marketer requires a value"
+                  marketer="$2"; shift 2 ;;
+      --ts)       [[ $# -ge 2 ]] || die "boring wip: --ts requires a value"
+                  ts="$2"; shift 2 ;;
+      --base)     [[ $# -ge 2 ]] || die "boring wip: --base requires a value"
+                  base="$2"; shift 2 ;;
+      --prompt)   [[ $# -ge 2 ]] || die "boring wip: --prompt requires a value"
+                  prompt="$2"; shift 2 ;;
+      --force)    force="--force"; shift ;;
+      -h|--help)  _cmd_wip_print_help; return 0 ;;
+      -*)         die "boring wip: unknown flag $1" ;;
+      *)          [[ -z "$target" ]] && target="$1" || die "boring wip: extra argument $1"
+                  shift ;;
+    esac
+  done
+
+  target="${target:-.}"
+  _cmd_wip_resolve_repo_and_profile "$target"
+
+  case "$sub" in
+    start)
+      [[ -z "$ts" ]] && ts="$(date +%Y%m%d%H%M%S)"
+      [[ -z "$base" ]] && base="$(jq -r '.save.target_branch // "main"' <<<"$_CMD_WIP_PROFILE_JSON")"
+      local branch
+      branch="$(saver_wip_branch_name "$marketer" "$ts")"
+      saver_create_wip_branch "$_CMD_WIP_REPO" "$branch" "$base"
+      log_success "WIP branch ready: $branch"
+      ;;
+    commit)
+      [[ -z "$prompt" ]] && die "boring wip commit: --prompt is required"
+      local msg
+      msg="$(saver_summarize_turn "$_CMD_WIP_REPO" "$prompt")"
+      saver_commit_turn "$_CMD_WIP_REPO" "$msg"
+      ;;
+    discard)
+      local current
+      current="$(git -C "$_CMD_WIP_REPO" rev-parse --abbrev-ref HEAD)"
+      if [[ "$current" != boring/wip/* ]]; then
+        die "boring wip discard: current branch ($current) is not a WIP branch (expected boring/wip/...)"
+      fi
+      saver_discard_wip "$_CMD_WIP_REPO" "$current" "$force"
+      ;;
+    *)
+      log_error "boring wip: unknown subcommand: $sub"
+      _cmd_wip_print_help >&2
+      exit 1
+      ;;
+  esac
+}
+
+# ============================================================================
+# cmd_save — promote the WIP branch to a named branch + PR (ARD-0022 §7)
+# ============================================================================
+
+_cmd_save_print_help() {
+  cat <<EOF
+boring save — promote the current WIP branch to a PR (ARD-0022 §7)
+
+USAGE
+  boring save <profile|.> [--message <text>] [--draft|--ready] [--target <branch>]
+
+ARGUMENTS
+  <profile|.>        Path to a boring-enabled repo (use "." for the cwd).
+
+OPTIONS
+  --message <text>   Title override (default: AI-summarized from cumulative diff).
+  --draft            Open the PR as a draft (override profile save.draft_by_default).
+  --ready            Open the PR ready for review (override profile save.draft_by_default).
+  --target <branch>  Target branch override (default: profile save.target_branch).
+  -h, --help         Print this help.
+
+BEHAVIOR
+  1. Reads the profile's save: block from .boring/profile.yaml.
+  2. Branches the current WIP branch into <branch_prefix><slug>-<date>-<sha>.
+  3. Pushes to origin and opens a PR via 'gh pr create'.
+  4. On failure (gh not authed, network down, push rejected), leaves the WIP
+     branch intact and prints an actionable error.
+EOF
+}
+
+cmd_save() {
+  local target=""
+  local -a saver_flags
+  saver_flags=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        _cmd_save_print_help; return 0 ;;
+      --message|--target)
+        [[ $# -ge 2 ]] || die "boring save: $1 requires a value"
+        saver_flags+=("$1" "$2"); shift 2 ;;
+      --draft|--ready)
+        saver_flags+=("$1"); shift ;;
+      -*)
+        die "boring save: unknown flag $1" ;;
+      *)
+        [[ -z "$target" ]] && target="$1" || die "boring save: extra argument $1"
+        shift ;;
+    esac
+  done
+
+  target="${target:-.}"
+  [[ -d "$target" ]] || die "boring save: not a directory: $target"
+  local repo
+  repo="$(cd "$target" && pwd)"
+
+  local profile_json
+  profile_json="$(profile_load "$repo")"
+
+  # `${arr[@]+"${arr[@]}"}` is the bash-3.2-safe empty-array splat (same
+  # pattern used by cmd_open / cmd_run for --remote-env args).
+  saver_save "$repo" "$profile_json" ${saver_flags[@]+"${saver_flags[@]}"}
+}
+
+# cmd_proxy — thin dispatcher into the boring-proxy Go binary (ARD-0021).
+# v0: built by `make -C tools/boring-proxy build`; we look next to the CLI.
+cmd_proxy() {
+  local proxy_bin="$SCRIPT_DIR/tools/boring-proxy/boring-proxy"
+  if [[ ! -x "$proxy_bin" ]]; then
+    log_error "boring-proxy binary not found at: $proxy_bin"
+    log_info "Build it first: make -C tools/boring-proxy build"
+    log_info "(requires Go 1.22+; see tools/boring-proxy/ for source)"
+    exit 1
+  fi
+  exec "$proxy_bin" "$@"
+}
+
 cmd_version() {
   echo "boring $VERSION"
 }
@@ -677,6 +877,11 @@ USAGE
   boring restore [<path>] [--refresh]        Run/re-run restore: entries (ARD-0012)
   boring audit security <profile>            Read profile-shared security events (ARD-0010)
   boring audit prompts  <profile>            Read prompt events (per-user by default)
+  boring proxy <subcommand>                  Host-side reverse proxy (ARD-0021, v1.x)
+                                             Subcommands: install, uninstall, serve,
+                                             status, rotate-token
+  boring wip {start|commit|discard} <path>   WIP-branch lifecycle (ARD-0022 §3)
+  boring save <path> [--message --draft ...] Promote WIP branch to PR (ARD-0022 §7)
   boring doctor                              Diagnose environment
   boring version                             Print version
   boring help                                Print this help
@@ -708,6 +913,9 @@ main() {
     run)                cmd_run     "$@" ;;
     restore)            cmd_restore "$@" ;;
     audit)              cmd_audit   "$@" ;;
+    proxy)              cmd_proxy   "$@" ;;
+    wip)                cmd_wip     "$@" ;;
+    save)               cmd_save    "$@" ;;
     doctor)             cmd_doctor  "$@" ;;
     version|-v|--version) cmd_version ;;
     help|-h|--help)     cmd_help ;;

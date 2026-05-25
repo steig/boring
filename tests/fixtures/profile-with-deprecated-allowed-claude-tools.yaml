@@ -1,0 +1,12 @@
+# Fixture for the ARD-0026 backward-compat path: guardrails.allowed_claude_tools
+# is the deprecated alias for guardrails.allowed_tools. profile_load should
+# accept this with a warning and rewrite to the canonical key.
+profile_version: "1"
+name: deprecated-allowed-claude-tools
+preset: shopify
+services: []
+guardrails:
+  forbid_branches: [main]
+  allowed_claude_tools:
+    - Read
+    - Edit

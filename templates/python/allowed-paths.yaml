@@ -1,0 +1,5 @@
+# Per ARD-0022 §5.2: default path allowlist for the python preset.
+allowed_paths:
+  - src/
+  - content/
+  - templates/

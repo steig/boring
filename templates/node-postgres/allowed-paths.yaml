@@ -1,0 +1,6 @@
+# Per ARD-0022 §5.2: default path allowlist for the node-postgres preset.
+# Migrations explicitly off.
+allowed_paths:
+  - src/
+  - public/
+  - content/

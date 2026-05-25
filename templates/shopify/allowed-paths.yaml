@@ -1,0 +1,10 @@
+# Per ARD-0022 §5.2: default path allowlist for the shopify preset.
+# Curated for the marketer-as-content-editor case. Profiles extend (additive)
+# via `allowed_paths:` and carve out via `disallowed_paths:`.
+allowed_paths:
+  - templates/
+  - snippets/
+  - sections/
+  - assets/
+  - config/
+  - locales/

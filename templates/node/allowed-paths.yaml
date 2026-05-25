@@ -1,0 +1,5 @@
+# Per ARD-0022 §5.2: default path allowlist for the node preset.
+allowed_paths:
+  - src/
+  - public/
+  - content/

@@ -1,0 +1,45 @@
+# Fixture for the ARD-0022/0026/0028 boring-ui prerequisite schema additions.
+# Exercises every new field. Consumed by tests/smoke-boring-ui-schema.sh.
+profile_version: "1"
+name: boring-ui-fixture
+preset: shopify
+services: []
+
+# ARD-0026 §1: canonical tool vocabulary (renamed from allowed_claude_tools).
+guardrails:
+  forbid_branches:
+    - main
+  forbid_commands:
+    - "gh pr merge"
+  allowed_tools:
+    - edit
+    - run
+    - read
+    - web_fetch
+
+# ARD-0022 §5 / ARD-0026 §3: path allowlist as additive + subtractive overrides
+# on top of the shopify preset default (templates/shopify/allowed-paths.yaml).
+allowed_paths:
+  - app/copy/
+  - app/content/
+disallowed_paths:
+  - .github/
+
+# ARD-0022 §6: preview iframe target. Single URL → normalizes to a one-element
+# preview_urls list with name="default".
+preview_url: http://localhost:9292/
+
+# ARD-0022 §7: save block. All fields exercised; reviewers list (not
+# reviewers_from) to confirm the mutually-exclusive path.
+save:
+  target_branch: main
+  reviewers:
+    - alice
+    - bob
+  draft_by_default: true
+  branch_prefix: "marketer/"
+  pr_template: ".github/PULL_REQUEST_TEMPLATE/marketer.md"
+
+# ARD-0022 §3 + §7.3: WIP-branch lifecycle timeouts.
+wip_branch_ttl: 14d
+wip_branch_grace: 48h
