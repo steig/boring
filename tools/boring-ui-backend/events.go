@@ -62,6 +62,10 @@ const (
 	EventSaveStarted   EventType = "save_started"
 	EventSaveSucceeded EventType = "save_succeeded"
 	EventSaveFailed    EventType = "save_failed"
+	// EventPolicyBlocked is emitted by the post-turn enforcement pass when a
+	// file modified by the AI falls outside the configured allowed_paths.
+	// The file is reverted via git before this event lands.
+	EventPolicyBlocked EventType = "policy_blocked"
 )
 
 // Envelope is the persisted shape on the JSONL thread + the in-memory shape
@@ -119,6 +123,15 @@ type SaveSucceededData struct {
 type SaveFailedData struct {
 	Error       string `json:"error"`
 	Recoverable bool   `json:"recoverable"`
+}
+
+// PolicyBlockedData carries the reverted file path + a human-readable reason
+// for the chat UI to render the red-bordered card. v0 sets Reason to
+// "outside allowed_paths" for the normal case; revert failures append the
+// underlying git error so the engineer can debug.
+type PolicyBlockedData struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
 }
 
 // Broadcaster is a fan-out SSE pub/sub. Multiple subscribers receive every

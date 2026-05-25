@@ -32,7 +32,7 @@ func newTestServerProvider(t *testing.T, provider string) (*Server, *httptest.Se
 		t.Fatalf("NewThread: %v", err)
 	}
 	b := NewBroadcaster()
-	s := NewServer("test", t.TempDir(), "", provider, b, th)
+	s := NewServer("test", t.TempDir(), "", "", provider, nil, b, th)
 	// Disable save shell-out for tests; the runSave fakeSaveSucceeded path is
 	// exercised separately.
 	s.SaveCmd = nil
@@ -88,7 +88,7 @@ func TestIndexPreviewIframeWhenURLSet(t *testing.T) {
 	}
 	b := NewBroadcaster()
 	t.Cleanup(b.Close)
-	s := NewServer("test", t.TempDir(), "http://localhost:3000/", "mock", b, th)
+	s := NewServer("test", t.TempDir(), "http://localhost:3000/", "", "mock", nil, b, th)
 	s.SaveCmd = nil
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
@@ -124,7 +124,7 @@ func TestIndexPreviewHeaderRendersWhenURLSet(t *testing.T) {
 	}
 	b := NewBroadcaster()
 	t.Cleanup(b.Close)
-	s := NewServer("test", t.TempDir(), "http://localhost:3000/", "mock", b, th)
+	s := NewServer("test", t.TempDir(), "http://localhost:3000/", "", "mock", nil, b, th)
 	s.SaveCmd = nil
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
@@ -181,7 +181,7 @@ func TestIndexPreviewURLEscaped(t *testing.T) {
 	}
 	b := NewBroadcaster()
 	t.Cleanup(b.Close)
-	s := NewServer("test", t.TempDir(), `http://x/"><script>alert(1)</script>`, "mock", b, th)
+	s := NewServer("test", t.TempDir(), `http://x/"><script>alert(1)</script>`, "", "mock", nil, b, th)
 	s.SaveCmd = nil
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
@@ -426,7 +426,7 @@ func TestThreadPersistsAcrossServerRestart(t *testing.T) {
 	}
 	b := NewBroadcaster()
 	defer b.Close()
-	s := NewServer("persist", t.TempDir(), "", "mock", b, th)
+	s := NewServer("persist", t.TempDir(), "", "", "mock", nil, b, th)
 	s.SaveCmd = nil
 
 	srv1 := httptest.NewServer(s.Handler())
@@ -446,7 +446,7 @@ func TestThreadPersistsAcrossServerRestart(t *testing.T) {
 	}
 	b2 := NewBroadcaster()
 	defer b2.Close()
-	s2 := NewServer("persist", t.TempDir(), "", "mock", b2, th2)
+	s2 := NewServer("persist", t.TempDir(), "", "", "mock", nil, b2, th2)
 	s2.SaveCmd = nil
 	srv2 := httptest.NewServer(s2.Handler())
 	defer srv2.Close()

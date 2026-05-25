@@ -127,6 +127,13 @@ var allowedClaudeTools = []string{
 // always set in v0); it's accepted as a parameter so the call-site is ready
 // for the future "resume the same conversation" capability.
 //
+// allowlist is the resolved set of workdir-relative glob patterns for the
+// reactive post-turn path-allowlist enforcement (ARD-0029 §6 gap #1 backstop;
+// see policy.go). Empty slice means no enforcement (v0 default). When set,
+// after the parser returns (or claude exits), we git-status the workdir,
+// revert any modified files outside the allowlist, and emit a policy_blocked
+// event per reverted file.
+//
 // Hardening flags (added 2026-05-25 to fix the "raw MCP/orchestration tool
 // cards" UX problem):
 //
@@ -144,7 +151,7 @@ var allowedClaudeTools = []string{
 // would break the project-context expectation for marketers' chats. The two
 // flags above already eliminate the user-reported leakage (personal MCPs +
 // orchestration tools) without nuking the system prompt.
-func runClaudeTurn(ctx context.Context, workdir, prompt string, bcast *Broadcaster, thread *Thread, sessionID string) error {
+func runClaudeTurn(ctx context.Context, workdir, prompt string, allowlist []string, bcast *Broadcaster, thread *Thread, sessionID string) error {
 	_ = sessionID // reserved; --no-session-persistence is always set in v0.
 
 	emit := &claudeEmitter{bcast: bcast, thread: thread}
@@ -243,6 +250,9 @@ func runClaudeTurn(ctx context.Context, workdir, prompt string, bcast *Broadcast
 		stderrTail := tailString(stderrBuf.String(), 400)
 		msg := fmt.Sprintf("claude exited: %v; stderr: %s", waitErr, stderrTail)
 		emit.emit(EventTurnComplete, TurnCompleteData{Error: msg})
+		// Even on abnormal exit, run the post-turn enforcement: claude may
+		// have written files before crashing, and those still need policing.
+		runPostTurnEnforcement(workdir, allowlist, bcast, thread)
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return ctx.Err()
 		}
@@ -250,9 +260,33 @@ func runClaudeTurn(ctx context.Context, workdir, prompt string, bcast *Broadcast
 	}
 	if parseErr != nil && !sawResult {
 		emit.emit(EventTurnComplete, TurnCompleteData{Error: "parse: " + parseErr.Error()})
+		runPostTurnEnforcement(workdir, allowlist, bcast, thread)
 		return fmt.Errorf("claude: parse: %w", parseErr)
 	}
+	// Clean exit. Reactive path-allowlist enforcement runs here per
+	// ARD-0029 §6 gap #1; no-op when allowlist is empty.
+	runPostTurnEnforcement(workdir, allowlist, bcast, thread)
 	return nil
+}
+
+// runPostTurnEnforcement is the single call-site for the post-turn allowlist
+// pass. Kept as a tiny helper so the three exit paths (clean, parse-error,
+// abnormal-exit) all share the same enforcement semantics. Errors are logged
+// rather than propagated — by the time we get here, the turn has produced
+// whatever envelopes it was going to, and a failure in enforcement (e.g. git
+// command failure) shouldn't change the turn's exit code.
+func runPostTurnEnforcement(workdir string, allowlist []string, bcast *Broadcaster, thread *Thread) {
+	if len(allowlist) == 0 {
+		return
+	}
+	emitter := &broadcasterPolicyEmitter{bcast: bcast, thread: thread}
+	blocked, err := enforceAllowlist(workdir, allowlist, emitter)
+	if err != nil {
+		log.Printf("claude: post-turn enforcement: %v", err)
+	}
+	if len(blocked) > 0 {
+		log.Printf("claude: reverted %d out-of-allowlist file(s): %v", len(blocked), blocked)
+	}
 }
 
 // killGroup best-effort kills the child's process group. Helpers spawned by

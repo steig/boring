@@ -35,18 +35,20 @@ import (
 
 func main() {
 	var (
-		socketPath = flag.String("socket", "", "Unix socket path to listen on (required)")
-		slug       = flag.String("slug", "", "project slug (required)")
-		workdir    = flag.String("workdir", "", "project working directory (required)")
-		threadsDir = flag.String("threads-dir", DefaultThreadsDir, "directory for thread JSONL files")
-		provider   = flag.String("provider", "mock", "AI provider: mock | claude")
-		mock       = flag.Bool("mock", false, "deprecated alias for --provider=mock")
-		previewURL = flag.String("preview-url", "", "absolute URL the right-pane preview iframe loads (per ARD-0022 §6); empty shows fallback message")
+		socketPath   = flag.String("socket", "", "Unix socket path to listen on (required)")
+		slug         = flag.String("slug", "", "project slug (required)")
+		workdir      = flag.String("workdir", "", "project working directory (required)")
+		threadsDir   = flag.String("threads-dir", DefaultThreadsDir, "directory for thread JSONL files")
+		provider     = flag.String("provider", "mock", "AI provider: mock | claude")
+		mock         = flag.Bool("mock", false, "deprecated alias for --provider=mock")
+		previewURL   = flag.String("preview-url", "", "absolute URL the right-pane preview iframe loads (per ARD-0022 §6); empty shows fallback message")
+		terminalURL  = flag.String("terminal-url", "", "absolute URL the LEFT-pane terminal iframe loads (e.g. ttyd serving claude); empty renders the SSE chat UI instead")
+		allowedPaths = flag.String("allowed-paths", "", "comma-separated glob patterns relative to workdir; files modified by the AI outside these patterns are reverted via git after each turn. Empty disables enforcement.")
 	)
 	flag.Parse()
 
 	if *socketPath == "" || *slug == "" || *workdir == "" {
-		fmt.Fprintln(os.Stderr, "usage: boring-ui-backend --socket <path> --slug <name> --workdir <path> [--provider mock|claude] [--preview-url <url>]")
+		fmt.Fprintln(os.Stderr, "usage: boring-ui-backend --socket <path> --slug <name> --workdir <path> [--provider mock|claude] [--preview-url <url>] [--terminal-url <url>] [--allowed-paths <globs>]")
 		os.Exit(2)
 	}
 
@@ -69,12 +71,20 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*socketPath, *slug, *workdir, *threadsDir, *previewURL, *provider); err != nil {
+	parsedAllowed := parseAllowedPaths(*allowedPaths)
+	if len(parsedAllowed) > 0 && !isGitRepo(*workdir) {
+		fmt.Fprintf(os.Stderr,
+			"boring-ui-backend: --allowed-paths requires workdir to be a git repository; %s is not (git rev-parse --git-dir failed). Reactive enforcement uses git checkout to revert out-of-allowlist writes.\n",
+			*workdir)
+		os.Exit(2)
+	}
+
+	if err := run(*socketPath, *slug, *workdir, *threadsDir, *previewURL, *terminalURL, *provider, parsedAllowed); err != nil {
 		log.Fatalf("boring-ui-backend: %v", err)
 	}
 }
 
-func run(socketPath, slug, workdir, threadsDir, previewURL, provider string) error {
+func run(socketPath, slug, workdir, threadsDir, previewURL, terminalURL, provider string, allowedPaths []string) error {
 	// Set up the socket directory + remove any stale socket from a prior run.
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return fmt.Errorf("create socket dir: %w", err)
@@ -92,7 +102,7 @@ func run(socketPath, slug, workdir, threadsDir, previewURL, provider string) err
 	b := NewBroadcaster()
 	defer b.Close()
 
-	srv := NewServer(slug, workdir, previewURL, provider, b, thread)
+	srv := NewServer(slug, workdir, previewURL, terminalURL, provider, allowedPaths, b, thread)
 
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -125,6 +135,9 @@ func run(socketPath, slug, workdir, threadsDir, previewURL, provider string) err
 	}()
 
 	log.Printf("boring-ui-backend serving slug=%s provider=%s on %s", slug, provider, socketPath)
+	if len(allowedPaths) > 0 {
+		log.Printf("reactive path-allowlist enforcement enabled: %v", allowedPaths)
+	}
 
 	if err := httpSrv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve: %w", err)

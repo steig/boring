@@ -35,12 +35,14 @@ var assetsFS embed.FS
 
 // Server bundles the long-lived state for one project's backend.
 type Server struct {
-	Slug        string
-	Workdir     string // project working directory (used by /api/save AND turn spawn)
-	PreviewURL  string // absolute URL the right-pane iframe loads (per ARD-0022 §6); empty -> fallback message
-	Provider    string // "mock" | "claude" — selects the turn runner in handleMessages
-	Broadcaster *Broadcaster
-	Thread      *Thread
+	Slug         string
+	Workdir      string   // project working directory (used by /api/save AND turn spawn)
+	PreviewURL   string   // absolute URL the right-pane iframe loads (per ARD-0022 §6); empty -> fallback message
+	TerminalURL  string   // absolute URL the LEFT-pane iframe loads when set (replaces chat thread w/ embedded terminal, e.g. ttyd serving claude); empty -> SSE chat UI
+	Provider     string   // "mock" | "claude" — selects the turn runner in handleMessages
+	AllowedPaths []string // resolved workdir-relative glob set for reactive path-allowlist enforcement (ARD-0029 §6 gap #1); empty -> no enforcement
+	Broadcaster  *Broadcaster
+	Thread       *Thread
 
 	// SaveCmd is the command to shell out to on /api/save. Defaults to
 	// "boring save"; tests override. If the binary isn't on PATH, the
@@ -50,21 +52,28 @@ type Server struct {
 
 	// TurnRunner overrides the function called to run an AI turn for the
 	// "claude" provider. Tests inject a stub here; production code leaves
-	// it nil and dispatches to runClaudeTurn.
-	TurnRunner func(ctx context.Context, workdir, prompt string, bcast *Broadcaster, thread *Thread, sessionID string) error
+	// it nil and dispatches to runClaudeTurn. The allowlist parameter
+	// carries the resolved AllowedPaths so the runner can perform reactive
+	// enforcement after each turn (ARD-0029 §6 gap #1).
+	TurnRunner func(ctx context.Context, workdir, prompt string, allowlist []string, bcast *Broadcaster, thread *Thread, sessionID string) error
 }
 
 // NewServer constructs a Server with sensible defaults. provider must be
-// "mock" or "claude" (main.go validates before reaching here).
-func NewServer(slug, workdir, previewURL, provider string, b *Broadcaster, t *Thread) *Server {
+// "mock" or "claude" (main.go validates before reaching here). allowedPaths
+// is the parsed --allowed-paths flag value; empty (nil) disables reactive
+// enforcement. terminalURL is the embedded-terminal URL for the LEFT pane
+// (e.g. ttyd serving claude); empty -> render the SSE chat UI instead.
+func NewServer(slug, workdir, previewURL, terminalURL, provider string, allowedPaths []string, b *Broadcaster, t *Thread) *Server {
 	return &Server{
-		Slug:        slug,
-		Workdir:     workdir,
-		PreviewURL:  previewURL,
-		Provider:    provider,
-		Broadcaster: b,
-		Thread:      t,
-		SaveCmd:     []string{"boring", "save"},
+		Slug:         slug,
+		Workdir:      workdir,
+		PreviewURL:   previewURL,
+		TerminalURL:  terminalURL,
+		Provider:     provider,
+		AllowedPaths: allowedPaths,
+		Broadcaster:  b,
+		Thread:       t,
+		SaveCmd:      []string{"boring", "save"},
 	}
 }
 
@@ -104,19 +113,35 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(renderIndex(string(data), s.PreviewURL)))
+	_, _ = w.Write([]byte(renderIndex(string(data), s.PreviewURL, s.TerminalURL)))
 }
 
-// renderIndex performs serve-time substitution of the preview-pane content.
-// The template carries a {{PREVIEW_PANE}} marker that we replace with either
-// an iframe (when previewURL is non-empty) or a fallback message div. The
-// substitution happens once per request; there's no per-request templating
-// cost worth caching.
+// renderIndex performs serve-time substitution of the pane content.
+// The template carries {{PREVIEW_PANE}} (right pane) and {{LEFT_PANE}}
+// (left pane: terminal iframe when TerminalURL set, SSE chat UI otherwise).
 //
-// We don't use html/template because the only dynamic value is the preview
-// URL, which we control via the CLI flag (not user-supplied), and we want
-// the HTML readable in source. strings.ReplaceAll is sufficient.
-func renderIndex(html, previewURL string) string {
+// We don't use html/template because the only dynamic values are CLI flags
+// (not user-supplied), and we want the HTML readable in source.
+// strings.ReplaceAll is sufficient.
+func renderIndex(html, previewURL, terminalURL string) string {
+	htmlEsc := strings.NewReplacer(`"`, "&quot;", `<`, "&lt;", `>`, "&gt;", `&`, "&amp;")
+
+	// LEFT_PANE: terminal iframe when configured, chat composer + thread otherwise.
+	var leftPane string
+	if terminalURL != "" {
+		safeTerm := htmlEsc.Replace(terminalURL)
+		leftPane = `<iframe id="terminal-iframe" src="` + safeTerm +
+			`" title="terminal" allow="clipboard-read; clipboard-write"></iframe>`
+	} else {
+		leftPane = `<div class="thread" id="thread"></div>` +
+			`<form class="composer" id="composer" autocomplete="off">` +
+			`<input id="input" type="text" placeholder="Ask the AI to change something..." autocomplete="off" />` +
+			`<button type="submit" class="btn primary">Send</button>` +
+			`</form>`
+	}
+	html = strings.ReplaceAll(html, "{{LEFT_PANE}}", leftPane)
+
+	// PREVIEW_PANE: unchanged from prior implementation.
 	var pane string
 	if previewURL != "" {
 		// HTML-attribute-safe escape for the URL inside src="..." and href.
@@ -279,7 +304,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			runner = runClaudeTurn
 		}
 		go func() {
-			if err := runner(turnCtx, s.Workdir, req.Text, s.Broadcaster, s.Thread, s.Slug); err != nil {
+			if err := runner(turnCtx, s.Workdir, req.Text, s.AllowedPaths, s.Broadcaster, s.Thread, s.Slug); err != nil {
 				log.Printf("claude turn: %v", err)
 			}
 		}()

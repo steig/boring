@@ -274,6 +274,34 @@
     scrollToBottom();
   }
 
+  // renderPolicyBlocked renders the red-bordered card for reverted
+  // out-of-allowlist file writes (ARD-0029 §6 gap #1 backstop). The card is
+  // collapsible — the summary shows the file + reason at a glance; expanding
+  // shows the full team-facing explanation. Cards are stylistically similar
+  // to tool cards (same weight, <details> shape) but with a distinct red/
+  // orange accent so the user can see at a glance "the system blocked
+  // something" without alarming them.
+  function renderPolicyBlocked(data) {
+    const path = (data && data.path) || "(unknown path)";
+    const reason = (data && data.reason) || "outside your team's allowed paths";
+    const card = el("details", { className: "card policy-blocked" }, [
+      el("summary", { className: "policy-summary" }, [
+        el("span", { className: "policy-icon", text: "🚫" }),
+        el("code", { className: "policy-path", text: path }),
+        el("span", { className: "policy-reason", text: reason + " — reverted" }),
+      ]),
+      el("div", { className: "policy-body" }, [
+        document.createTextNode(
+          "Your team has restricted edits to specific paths. " +
+          "The change to this file was automatically reverted. " +
+          "To allow edits here, ask an engineer to update the project's allowed_paths."
+        ),
+      ]),
+    ]);
+    thread.appendChild(card);
+    scrollToBottom();
+  }
+
   function renderSaveCard(kind, data) {
     let body;
     if (kind === "started") {
@@ -401,6 +429,9 @@
         setComposerBusy(false);
         showToast("Save failed: " + (data.error || "unknown"), true);
         break;
+      case "policy_blocked":
+        renderPolicyBlocked(data);
+        break;
       case "lock_status":
         // v0: not surfaced visually beyond the toast.
         break;
@@ -446,7 +477,7 @@
     const es = new EventSource("api/events");
     const types = [
       "user_message", "ai_thinking", "ai_text", "tool_call", "tool_result",
-      "turn_complete", "lock_status",
+      "turn_complete", "lock_status", "policy_blocked",
       "save_started", "save_succeeded", "save_failed",
     ];
     for (const t of types) {
