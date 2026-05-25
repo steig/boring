@@ -16,13 +16,23 @@ import (
 
 func newTestServer(t *testing.T, mock bool) (*Server, *httptest.Server) {
 	t.Helper()
+	provider := "claude" // arbitrary non-mock placeholder; tests of the claude
+	if mock {            // path inject TurnRunner so this never spawns claude.
+		provider = "mock"
+	}
+	return newTestServerProvider(t, provider)
+}
+
+// newTestServerProvider lets tests pick the provider explicitly.
+func newTestServerProvider(t *testing.T, provider string) (*Server, *httptest.Server) {
+	t.Helper()
 	dir := t.TempDir()
 	th, err := NewThread(dir, "test")
 	if err != nil {
 		t.Fatalf("NewThread: %v", err)
 	}
 	b := NewBroadcaster()
-	s := NewServer("test", t.TempDir(), mock, b, th)
+	s := NewServer("test", t.TempDir(), "", provider, b, th)
 	// Disable save shell-out for tests; the runSave fakeSaveSucceeded path is
 	// exercised separately.
 	s.SaveCmd = nil
@@ -47,6 +57,143 @@ func TestIndexServed(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !bytes.Contains(body, []byte("boring chat")) {
 		t.Errorf("index missing expected title; got %s", string(body[:min(200, len(body))]))
+	}
+}
+
+func TestIndexPreviewFallbackWhenURLEmpty(t *testing.T) {
+	// newTestServer constructs the Server with preview URL "" (see helper).
+	_, srv := newTestServer(t, false)
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if bytes.Contains(body, []byte("{{PREVIEW_PANE}}")) {
+		t.Errorf("template marker not substituted: %s", string(body[:min(400, len(body))]))
+	}
+	if !bytes.Contains(body, []byte("No preview configured")) {
+		t.Errorf("expected fallback copy; got %s", string(body[:min(400, len(body))]))
+	}
+	if bytes.Contains(body, []byte("<iframe")) {
+		t.Errorf("expected no iframe with empty preview URL; got %s", string(body[:min(400, len(body))]))
+	}
+}
+
+func TestIndexPreviewIframeWhenURLSet(t *testing.T) {
+	dir := t.TempDir()
+	th, err := NewThread(dir, "test")
+	if err != nil {
+		t.Fatalf("NewThread: %v", err)
+	}
+	b := NewBroadcaster()
+	t.Cleanup(b.Close)
+	s := NewServer("test", t.TempDir(), "http://localhost:3000/", "mock", b, th)
+	s.SaveCmd = nil
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if bytes.Contains(body, []byte("{{PREVIEW_PANE}}")) {
+		t.Errorf("template marker not substituted: %s", string(body[:min(400, len(body))]))
+	}
+	want := `src="http://localhost:3000/"`
+	if !bytes.Contains(body, []byte(want)) {
+		t.Errorf("expected iframe %s; got %s", want, string(body[:min(400, len(body))]))
+	}
+	if !bytes.Contains(body, []byte(`id="preview-iframe"`)) {
+		t.Errorf("expected iframe id=preview-iframe; got %s", string(body[:min(400, len(body))]))
+	}
+	if bytes.Contains(body, []byte("No preview configured")) {
+		t.Errorf("fallback copy leaked through when URL was set")
+	}
+}
+
+func TestIndexPreviewHeaderRendersWhenURLSet(t *testing.T) {
+	// When --preview-url is set, the preview pane should also include a
+	// header strip with refresh button, open-in-new-tab link, and the URL.
+	dir := t.TempDir()
+	th, err := NewThread(dir, "test")
+	if err != nil {
+		t.Fatalf("NewThread: %v", err)
+	}
+	b := NewBroadcaster()
+	t.Cleanup(b.Close)
+	s := NewServer("test", t.TempDir(), "http://localhost:3000/", "mock", b, th)
+	s.SaveCmd = nil
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	mustContain := []string{
+		`class="preview-header"`,                                // header strip
+		`id="preview-refresh"`,                                  // refresh button
+		`id="preview-open"`,                                     // open-in-new-tab link
+		`href="http://localhost:3000/"`,                         // link target
+		`target="_blank"`,                                       // opens new tab
+		`rel="noopener noreferrer"`,                             // safe link
+		`localhost:3000/`,                                       // muted URL display (scheme stripped)
+		`class="preview-url"`,                                   // URL element
+	}
+	for _, want := range mustContain {
+		if !bytes.Contains(body, []byte(want)) {
+			t.Errorf("preview header missing %q in:\n%s", want, string(body[:min(800, len(body))]))
+		}
+	}
+}
+
+func TestIndexPreviewHeaderAbsentWhenURLEmpty(t *testing.T) {
+	// The fallback case must NOT render the header strip — empty URL means
+	// nothing for the refresh/open buttons to act on.
+	_, srv := newTestServer(t, false) // newTestServer uses empty preview URL
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	for _, forbidden := range []string{`preview-header`, `id="preview-refresh"`, `id="preview-open"`} {
+		if bytes.Contains(body, []byte(forbidden)) {
+			t.Errorf("preview header leaked through with empty URL: found %q in:\n%s",
+				forbidden, string(body[:min(800, len(body))]))
+		}
+	}
+}
+
+func TestIndexPreviewURLEscaped(t *testing.T) {
+	// Defense-in-depth: even though --preview-url is operator-controlled,
+	// the substitution must HTML-attribute-escape the URL so a malformed
+	// flag value can't break out of src="...".
+	dir := t.TempDir()
+	th, err := NewThread(dir, "test")
+	if err != nil {
+		t.Fatalf("NewThread: %v", err)
+	}
+	b := NewBroadcaster()
+	t.Cleanup(b.Close)
+	s := NewServer("test", t.TempDir(), `http://x/"><script>alert(1)</script>`, "mock", b, th)
+	s.SaveCmd = nil
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if bytes.Contains(body, []byte("<script>alert(1)</script>")) {
+		t.Errorf("unescaped script tag in output: %s", string(body[:min(400, len(body))]))
 	}
 }
 
@@ -279,7 +426,7 @@ func TestThreadPersistsAcrossServerRestart(t *testing.T) {
 	}
 	b := NewBroadcaster()
 	defer b.Close()
-	s := NewServer("persist", t.TempDir(), true, b, th)
+	s := NewServer("persist", t.TempDir(), "", "mock", b, th)
 	s.SaveCmd = nil
 
 	srv1 := httptest.NewServer(s.Handler())
@@ -299,7 +446,7 @@ func TestThreadPersistsAcrossServerRestart(t *testing.T) {
 	}
 	b2 := NewBroadcaster()
 	defer b2.Close()
-	s2 := NewServer("persist", t.TempDir(), true, b2, th2)
+	s2 := NewServer("persist", t.TempDir(), "", "mock", b2, th2)
 	s2.SaveCmd = nil
 	srv2 := httptest.NewServer(s2.Handler())
 	defer srv2.Close()

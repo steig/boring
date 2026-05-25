@@ -10,7 +10,12 @@
 //	boring-ui-backend --socket /run/boring/marketing-site.sock \
 //	                  --slug marketing-site \
 //	                  --workdir /workspaces/marketing-site \
-//	                  --mock
+//	                  --provider mock|claude
+//
+// The --provider flag selects how /api/messages turns are run:
+//   - mock   : deterministic fixture sequence (default; no AI billing)
+//   - claude : spawn the real `claude` CLI; preserves Claude Max subscription
+//     billing. Requires `claude` on PATH and ANTHROPIC_API_KEY unset.
 package main
 
 import (
@@ -34,21 +39,42 @@ func main() {
 		slug       = flag.String("slug", "", "project slug (required)")
 		workdir    = flag.String("workdir", "", "project working directory (required)")
 		threadsDir = flag.String("threads-dir", DefaultThreadsDir, "directory for thread JSONL files")
-		mock       = flag.Bool("mock", false, "use mock AI event generator instead of real OpenCode")
+		provider   = flag.String("provider", "mock", "AI provider: mock | claude")
+		mock       = flag.Bool("mock", false, "deprecated alias for --provider=mock")
+		previewURL = flag.String("preview-url", "", "absolute URL the right-pane preview iframe loads (per ARD-0022 §6); empty shows fallback message")
 	)
 	flag.Parse()
 
 	if *socketPath == "" || *slug == "" || *workdir == "" {
-		fmt.Fprintln(os.Stderr, "usage: boring-ui-backend --socket <path> --slug <name> --workdir <path> [--mock]")
+		fmt.Fprintln(os.Stderr, "usage: boring-ui-backend --socket <path> --slug <name> --workdir <path> [--provider mock|claude] [--preview-url <url>]")
 		os.Exit(2)
 	}
 
-	if err := run(*socketPath, *slug, *workdir, *threadsDir, *mock); err != nil {
+	// --mock back-compat: if the bool flag is set, force provider=mock.
+	if *mock {
+		*provider = "mock"
+	}
+
+	switch *provider {
+	case "mock":
+		// nothing to verify
+	case "claude":
+		ok, reason := claudeAvailable()
+		if !ok {
+			fmt.Fprintf(os.Stderr, "boring-ui-backend: --provider claude unavailable: %s\n", reason)
+			os.Exit(2)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "boring-ui-backend: unknown --provider %q (want: mock | claude)\n", *provider)
+		os.Exit(2)
+	}
+
+	if err := run(*socketPath, *slug, *workdir, *threadsDir, *previewURL, *provider); err != nil {
 		log.Fatalf("boring-ui-backend: %v", err)
 	}
 }
 
-func run(socketPath, slug, workdir, threadsDir string, mock bool) error {
+func run(socketPath, slug, workdir, threadsDir, previewURL, provider string) error {
 	// Set up the socket directory + remove any stale socket from a prior run.
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return fmt.Errorf("create socket dir: %w", err)
@@ -66,7 +92,7 @@ func run(socketPath, slug, workdir, threadsDir string, mock bool) error {
 	b := NewBroadcaster()
 	defer b.Close()
 
-	srv := NewServer(slug, workdir, mock, b, thread)
+	srv := NewServer(slug, workdir, previewURL, provider, b, thread)
 
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -98,11 +124,7 @@ func run(socketPath, slug, workdir, threadsDir string, mock bool) error {
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
 
-	mode := "real"
-	if mock {
-		mode = "MOCK"
-	}
-	log.Printf("boring-ui-backend serving slug=%s mode=%s on %s", slug, mode, socketPath)
+	log.Printf("boring-ui-backend serving slug=%s provider=%s on %s", slug, provider, socketPath)
 
 	if err := httpSrv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve: %w", err)

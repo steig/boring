@@ -36,8 +36,9 @@ var assetsFS embed.FS
 // Server bundles the long-lived state for one project's backend.
 type Server struct {
 	Slug        string
-	Workdir     string // project working directory (used by /api/save)
-	Mock        bool   // if true, /api/messages uses MockTurn
+	Workdir     string // project working directory (used by /api/save AND turn spawn)
+	PreviewURL  string // absolute URL the right-pane iframe loads (per ARD-0022 §6); empty -> fallback message
+	Provider    string // "mock" | "claude" — selects the turn runner in handleMessages
 	Broadcaster *Broadcaster
 	Thread      *Thread
 
@@ -46,14 +47,21 @@ type Server struct {
 	// handler emits a fake save_succeeded event so the v0 UI flow works
 	// before lib/saver.sh lands.
 	SaveCmd []string
+
+	// TurnRunner overrides the function called to run an AI turn for the
+	// "claude" provider. Tests inject a stub here; production code leaves
+	// it nil and dispatches to runClaudeTurn.
+	TurnRunner func(ctx context.Context, workdir, prompt string, bcast *Broadcaster, thread *Thread, sessionID string) error
 }
 
-// NewServer constructs a Server with sensible defaults.
-func NewServer(slug, workdir string, mock bool, b *Broadcaster, t *Thread) *Server {
+// NewServer constructs a Server with sensible defaults. provider must be
+// "mock" or "claude" (main.go validates before reaching here).
+func NewServer(slug, workdir, previewURL, provider string, b *Broadcaster, t *Thread) *Server {
 	return &Server{
 		Slug:        slug,
 		Workdir:     workdir,
-		Mock:        mock,
+		PreviewURL:  previewURL,
+		Provider:    provider,
 		Broadcaster: b,
 		Thread:      t,
 		SaveCmd:     []string{"boring", "save"},
@@ -96,7 +104,55 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(data)
+	_, _ = w.Write([]byte(renderIndex(string(data), s.PreviewURL)))
+}
+
+// renderIndex performs serve-time substitution of the preview-pane content.
+// The template carries a {{PREVIEW_PANE}} marker that we replace with either
+// an iframe (when previewURL is non-empty) or a fallback message div. The
+// substitution happens once per request; there's no per-request templating
+// cost worth caching.
+//
+// We don't use html/template because the only dynamic value is the preview
+// URL, which we control via the CLI flag (not user-supplied), and we want
+// the HTML readable in source. strings.ReplaceAll is sufficient.
+func renderIndex(html, previewURL string) string {
+	var pane string
+	if previewURL != "" {
+		// HTML-attribute-safe escape for the URL inside src="..." and href.
+		// The URL comes from a CLI flag (operator-controlled), so this is
+		// defense in depth rather than untrusted-input sanitization.
+		htmlEsc := strings.NewReplacer(`"`, "&quot;", `<`, "&lt;", `>`, "&gt;", `&`, "&amp;")
+		safe := htmlEsc.Replace(previewURL)
+		// displayURL is what we show in the muted text strip (stripped of
+		// scheme to keep it compact: "localhost:3000/" reads better than
+		// "http://localhost:3000/"). Cosmetic only.
+		display := previewURL
+		for _, prefix := range []string{"https://", "http://"} {
+			if strings.HasPrefix(display, prefix) {
+				display = strings.TrimPrefix(display, prefix)
+				break
+			}
+		}
+		safeDisplay := htmlEsc.Replace(display)
+		// Header strip with refresh button, open-in-new-tab link, and a
+		// muted URL display. Rendered only when a URL is configured —
+		// when not, we show the fallback message and skip the strip.
+		pane = `<div class="preview-header">` +
+			`<span class="preview-url" title="` + safe + `">` + safeDisplay + `</span>` +
+			`<div class="preview-actions">` +
+			`<button type="button" class="preview-btn" id="preview-refresh" title="Reload preview">↻</button>` +
+			`<a class="preview-btn" id="preview-open" href="` + safe + `" target="_blank" rel="noopener noreferrer" title="Open in new tab">↗</a>` +
+			`</div>` +
+			`</div>` +
+			`<iframe id="preview-iframe" src="` + safe + `" title="preview"></iframe>`
+	} else {
+		pane = `<div id="preview-fallback" class="preview-fallback">` +
+			`<p>No preview configured for this project.</p>` +
+			`<p class="hint">Set <code>--preview-url</code> on the backend to wire one.</p>` +
+			`</div>`
+	}
+	return strings.ReplaceAll(html, "{{PREVIEW_PANE}}", pane)
 }
 
 func (s *Server) handleAsset(name, contentType string) http.HandlerFunc {
@@ -211,20 +267,27 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "text required")
 		return
 	}
-	if s.Mock {
-		// Fire the mock turn in a background goroutine so we can ACK quickly.
-		// Context detached from the request so the sequence completes even
-		// if the client disconnects mid-turn (matches OpenCode semantics).
-		go (&MockEmitter{Broadcaster: s.Broadcaster, Thread: s.Thread}).
-			MockTurn(context.Background(), req.Text)
-	} else {
-		// Real OpenCode integration goes here (ARD-0020). For v0, no-op +
-		// echo only.
-		env, err := s.Broadcaster.NewEnvelope(EventUserMessage, UserMessageData{Text: req.Text})
-		if err == nil {
-			_ = s.Thread.Append(env)
-			s.Broadcaster.Publish(env)
+	// Detach from the request context so the turn finishes even if the
+	// client disconnects mid-stream (matches OpenCode/Claude semantics —
+	// once a turn starts, we play it to completion and the SSE stream gets
+	// the rest on reconnect via hydration).
+	turnCtx := context.Background()
+	switch s.Provider {
+	case "claude":
+		runner := s.TurnRunner
+		if runner == nil {
+			runner = runClaudeTurn
 		}
+		go func() {
+			if err := runner(turnCtx, s.Workdir, req.Text, s.Broadcaster, s.Thread, s.Slug); err != nil {
+				log.Printf("claude turn: %v", err)
+			}
+		}()
+	case "mock":
+		fallthrough
+	default:
+		go (&MockEmitter{Broadcaster: s.Broadcaster, Thread: s.Thread}).
+			MockTurn(turnCtx, req.Text)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"accepted":true}`))

@@ -72,60 +72,203 @@
     currentThinking = null;
   }
 
-  const TOOL_ICONS = {
-    file_edit: "✎",
-    shell: "$",
-    network: "⚡",
-    db: "🗄",
-    undo: "↩",
-  };
-
-  const pendingTools = {}; // tool name -> card el (last unfilled)
-
-  function renderToolCall(data) {
-    const icon = TOOL_ICONS[data.tool] || "•";
-    const argsStr = data.args ? JSON.stringify(data.args) : "";
-    const card = el("div", { className: "card tool" }, [
-      el("div", { className: "meta" }, [
-        el("span", { className: "icon", text: icon }),
-        document.createTextNode(data.tool || "tool"),
-      ]),
-      el("div", { className: "summary", text: argsStr }),
+  // renderAIText renders one prose reply from the AI (a single text content
+  // block in the assistant message). One turn may emit multiple of these.
+  function renderAIText(data) {
+    const card = el("div", { className: "card ai" }, [
+      el("div", { className: "summary", text: data.text || "" }),
     ]);
-    pendingTools[data.tool] = card;
     thread.appendChild(card);
     scrollToBottom();
   }
 
+  // --- Tool-call rendering ----------------------------------------------
+  //
+  // Each tool call renders as a <details> element so the one-line summary
+  // is visible by default and clicking expands the raw JSON + tool result
+  // for debugging. We KEEP cards visible (transparency about what the AI
+  // is doing) but render them subdued — see .card.tool styles in chat.css.
+  //
+  // Renderers are keyed by tool name. Each returns a DocumentFragment-like
+  // node sequence built via el(). Unknown tools fall through to a generic
+  // renderer so future additions degrade rather than disappear.
+
+  function truncate(s, n) {
+    s = String(s == null ? "" : s);
+    return s.length > n ? s.slice(0, n) + "…" : s;
+  }
+
+  // makeCode wraps text in a monospaced <code> span for tool summaries.
+  function makeCode(text) {
+    return el("code", { className: "tool-arg", text: text });
+  }
+
+  // Type-aware renderers return the inline content node sequence for the
+  // <summary>. They never return null — empty args fall back to "(no args)"
+  // so the card still reads.
+  const TOOL_RENDERERS = {
+    Bash: (args) => {
+      const cmd = (args && args.command) || "";
+      return [
+        el("span", { className: "tool-prefix", text: "> " }),
+        makeCode(truncate(cmd, 100) || "(empty)"),
+      ];
+    },
+    Edit: (args) => {
+      const path = (args && args.file_path) || "(no path)";
+      const oldLen = args && typeof args.old_string === "string" ? args.old_string.length : null;
+      const newLen = args && typeof args.new_string === "string" ? args.new_string.length : null;
+      const nodes = [
+        el("span", { className: "tool-prefix", text: "✎ " }),
+        makeCode(path),
+      ];
+      if (oldLen != null && newLen != null) {
+        nodes.push(el("span", { className: "tool-meta-inline", text: ` (${oldLen}→${newLen} chars)` }));
+      }
+      return nodes;
+    },
+    Read: (args) => {
+      const path = (args && args.file_path) || "(no path)";
+      const nodes = [
+        el("span", { className: "tool-prefix", text: "👁 " }),
+        makeCode(path),
+      ];
+      if (args && (args.offset != null || args.limit != null)) {
+        const off = args.offset || 0;
+        const lim = args.limit || 0;
+        const end = lim ? off + lim : "EOF";
+        nodes.push(el("span", { className: "tool-meta-inline", text: ` (lines ${off}-${end})` }));
+      }
+      return nodes;
+    },
+    Write: (args) => {
+      const path = (args && args.file_path) || "(no path)";
+      return [
+        el("span", { className: "tool-prefix", text: "🆕 " }),
+        makeCode(path),
+      ];
+    },
+    Glob: (args) => {
+      const pat = (args && args.pattern) || "";
+      return [
+        el("span", { className: "tool-prefix", text: "🔍 " }),
+        makeCode(pat || "(no pattern)"),
+      ];
+    },
+    Grep: (args) => {
+      const pat = (args && args.pattern) || "";
+      const path = args && args.path;
+      const nodes = [
+        el("span", { className: "tool-prefix", text: "🔍 " }),
+        makeCode('"' + pat + '"'),
+      ];
+      if (path) {
+        nodes.push(el("span", { className: "tool-meta-inline", text: " in " }));
+        nodes.push(makeCode(path));
+      }
+      return nodes;
+    },
+    WebFetch: (args) => {
+      const url = (args && args.url) || "";
+      return [
+        el("span", { className: "tool-prefix", text: "🌐 " }),
+        makeCode(truncate(url, 100) || "(no url)"),
+      ];
+    },
+    WebSearch: (args) => {
+      const q = (args && args.query) || "";
+      return [
+        el("span", { className: "tool-prefix", text: "🌐 " }),
+        makeCode('"' + truncate(q, 80) + '"'),
+      ];
+    },
+  };
+
+  // genericRenderer is the fallback for any tool we don't have a specific
+  // renderer for (orchestration tools, MCP tools, future built-ins).
+  // Defense in depth: even if Part A's allowlist somehow misses a tool,
+  // it still shows up here rather than rendering as raw JSON.
+  function genericRenderer(toolName, args) {
+    let argStr = "";
+    try { argStr = JSON.stringify(args || {}); } catch (_) { argStr = "(unparsable args)"; }
+    return [
+      el("span", { className: "tool-prefix", text: (toolName || "tool") + ": " }),
+      makeCode(truncate(argStr, 80)),
+    ];
+  }
+
+  // pendingTools maps tool_use id (best-effort, by name in v0 since the
+  // envelope doesn't carry the id) to the open <details> card so we can
+  // attach the result inline when it arrives.
+  const pendingTools = {};
+
+  function renderToolCall(data) {
+    const toolName = data.tool || "tool";
+    const args = data.args || {};
+    const renderer = TOOL_RENDERERS[toolName];
+    const summaryNodes = renderer ? renderer(args) : genericRenderer(toolName, args);
+
+    // <details> gives us zero-JS expand/collapse. The summary is the
+    // always-visible one-liner; the body is the raw JSON for debugging.
+    const detailsEl = el("details", { className: "card tool" }, [
+      el("summary", { className: "tool-summary" }, summaryNodes),
+      el("div", { className: "tool-body" }, [
+        el("div", { className: "tool-body-label", text: "arguments" }),
+        el("pre", { className: "tool-json", text: JSON.stringify(args, null, 2) }),
+        // tool_result will be appended here when it arrives.
+      ]),
+    ]);
+    pendingTools[toolName] = detailsEl;
+    thread.appendChild(detailsEl);
+    scrollToBottom();
+  }
+
   function renderToolResult(data) {
-    const card = pendingTools[data.tool];
+    const toolName = data.tool || "tool";
+    const summary = data.result_summary || "(no output)";
+    const isError = summary.startsWith("error:") || summary.startsWith("✗");
+    const firstLine = summary.split("\n")[0];
+    const tag = isError ? "✗ " : "✓ ";
+    const truncated = truncate(firstLine, 120);
+
+    // The inline result line that sits under the summary, visible without
+    // expanding (so the user knows the tool finished + briefly how).
+    const resultLine = el("div", {
+      className: "tool-result-line" + (isError ? " err" : ""),
+      text: tag + truncated,
+    });
+
+    const card = pendingTools[toolName];
     if (card) {
-      delete pendingTools[data.tool];
-      const summary = card.querySelector(".summary");
-      if (summary) summary.textContent = data.result_summary || "(no summary)";
-      if (data.diff) {
-        const det = el("details", {}, [
-          el("summary", { text: "show diff" }),
-          el("pre", { text: data.diff }),
-        ]);
-        card.appendChild(det);
+      delete pendingTools[toolName];
+      // Insert the one-line result inside the <summary> so it shows when
+      // the card is collapsed. summaryEl is the <summary> element.
+      const summaryEl = card.querySelector("summary.tool-summary");
+      if (summaryEl) summaryEl.appendChild(resultLine);
+
+      // Also stash the full output in the expanded body for debugging.
+      const body = card.querySelector(".tool-body");
+      if (body) {
+        body.appendChild(el("div", { className: "tool-body-label", text: "output" }));
+        body.appendChild(el("pre", { className: "tool-output", text: summary }));
+        if (data.diff) {
+          body.appendChild(el("div", { className: "tool-body-label", text: "diff" }));
+          body.appendChild(el("pre", { className: "tool-output", text: data.diff }));
+        }
       }
     } else {
-      // Result arrived without a prior call card (e.g. stub undo). Render fresh.
-      const icon = TOOL_ICONS[data.tool] || "•";
-      const fresh = el("div", { className: "card tool" }, [
-        el("div", { className: "meta" }, [
-          el("span", { className: "icon", text: icon }),
-          document.createTextNode(data.tool || "tool"),
+      // Result arrived without a prior call card (stub undo, race). Render
+      // a standalone card so the event isn't dropped.
+      const fresh = el("details", { className: "card tool orphan" }, [
+        el("summary", { className: "tool-summary" }, [
+          el("span", { className: "tool-prefix", text: toolName + ": " }),
+          resultLine,
         ]),
-        el("div", { className: "summary", text: data.result_summary || "" }),
+        el("div", { className: "tool-body" }, [
+          el("div", { className: "tool-body-label", text: "output" }),
+          el("pre", { className: "tool-output", text: summary }),
+        ]),
       ]);
-      if (data.diff) {
-        fresh.appendChild(el("details", {}, [
-          el("summary", { text: "show diff" }),
-          el("pre", { text: data.diff }),
-        ]));
-      }
       thread.appendChild(fresh);
     }
     scrollToBottom();
@@ -162,6 +305,59 @@
     scrollToBottom();
   }
 
+  // --- Cost tracking -----------------------------------------------------
+  //
+  // Session running total of cost_usd + turn count, updated on every
+  // turn_complete event (whether from SSE or hydration). The header badge
+  // re-renders on each update so refreshing the page restores the total.
+
+  const session = { costUSD: 0, turns: 0 };
+  const sessionBadge = $("session-cost");
+
+  function fmtCost(usd) {
+    // 3-decimal USD per the spec — sub-cent precision is noise. Use
+    // toFixed(3) and prepend "$" for the small-money case ($0.000).
+    return "$" + (Number(usd) || 0).toFixed(3);
+  }
+
+  function fmtDuration(ms) {
+    if (!ms || ms < 0) return "";
+    if (ms < 1000) return ms + "ms";
+    return (ms / 1000).toFixed(1) + "s";
+  }
+
+  function renderSessionCost() {
+    if (!sessionBadge) return;
+    if (session.turns === 0) {
+      sessionBadge.textContent = "";
+      sessionBadge.hidden = true;
+      return;
+    }
+    sessionBadge.hidden = false;
+    const noun = session.turns === 1 ? "turn" : "turns";
+    sessionBadge.textContent = "Session: " + fmtCost(session.costUSD) + " · " + session.turns + " " + noun;
+  }
+
+  function renderTurnCostBadge(data) {
+    // Attach a small muted badge to the most recent AI surface so the cost
+    // sits visually next to what produced it. Appended to the thread as a
+    // standalone div so it survives even if no AI text was emitted.
+    const cost = Number(data && data.cost_usd) || 0;
+    const dur = Number(data && data.duration_ms) || 0;
+    const err = data && data.error;
+    const parts = [];
+    if (err) {
+      parts.push(el("span", { className: "turn-err", text: "error: " + truncate(err, 120) }));
+    } else {
+      if (cost > 0) parts.push(el("span", { text: fmtCost(cost) }));
+      if (dur > 0) parts.push(el("span", { text: " · " + fmtDuration(dur) }));
+    }
+    if (parts.length === 0) return; // nothing to show (mock turn with no metrics)
+    const badge = el("div", { className: "turn-badge" + (err ? " err" : "") }, parts);
+    thread.appendChild(badge);
+    scrollToBottom();
+  }
+
   function dispatchEnvelope(type, data) {
     switch (type) {
       case "user_message":
@@ -169,6 +365,10 @@
         break;
       case "ai_thinking":
         renderThinking();
+        break;
+      case "ai_text":
+        clearThinking();
+        renderAIText(data);
         break;
       case "tool_call":
         clearThinking();
@@ -180,6 +380,12 @@
       case "turn_complete":
         clearThinking();
         composer.classList.remove("busy");
+        renderTurnCostBadge(data);
+        if (data && typeof data.cost_usd === "number") {
+          session.costUSD += data.cost_usd;
+        }
+        session.turns += 1;
+        renderSessionCost();
         break;
       case "save_started":
         renderSaveCard("started", data);
@@ -239,7 +445,7 @@
   function attachSSE() {
     const es = new EventSource("api/events");
     const types = [
-      "user_message", "ai_thinking", "tool_call", "tool_result",
+      "user_message", "ai_thinking", "ai_text", "tool_call", "tool_result",
       "turn_complete", "lock_status",
       "save_started", "save_succeeded", "save_failed",
     ];
@@ -333,6 +539,22 @@
       showToast("Save failed: " + err, true);
     }
   });
+
+  // --- Preview header (only present when --preview-url was set) ---------
+
+  // The preview pane is rendered server-side; the refresh button + open link
+  // only exist when a preview URL is configured. Guard everything with
+  // existence checks so the fallback-message case is a clean no-op.
+  const previewRefresh = $("preview-refresh");
+  const previewIframe = $("preview-iframe");
+  if (previewRefresh && previewIframe) {
+    previewRefresh.addEventListener("click", () => {
+      // Reassigning .src forces a full reload that works across same-origin
+      // policies more reliably than contentWindow.location.reload(), which
+      // throws for cross-origin frames.
+      previewIframe.src = previewIframe.src;
+    });
+  }
 
   // --- Boot --------------------------------------------------------------
 

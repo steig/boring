@@ -26,10 +26,12 @@
 //
 //	user_message     {"text": string}                              — user typed
 //	ai_thinking      {}                                            — spinner up
+//	ai_text          {"text": string}                              — AI prose reply
 //	tool_call        {"tool": string, "args": object}              — tool start
 //	tool_result      {"tool": string, "result_summary": string,    — tool done
 //	                  "diff": string?}
-//	turn_complete    {}                                            — AI done
+//	turn_complete    {"cost_usd": number?, "duration_ms": number?, — AI done
+//	                  "error": string?}
 //	lock_status      {"holder": string, "last_active": string}     — presence
 //	save_started     {}                                            — save begin
 //	save_succeeded   {"pr_url": string, "branch_name": string}     — save ok
@@ -52,6 +54,7 @@ type EventType string
 const (
 	EventUserMessage   EventType = "user_message"
 	EventAIThinking    EventType = "ai_thinking"
+	EventAIText        EventType = "ai_text"
 	EventToolCall      EventType = "tool_call"
 	EventToolResult    EventType = "tool_result"
 	EventTurnComplete  EventType = "turn_complete"
@@ -74,6 +77,22 @@ type Envelope struct {
 
 type UserMessageData struct {
 	Text string `json:"text"`
+}
+
+// AITextData is the AI's prose reply for one assistant message block. One
+// AI turn may emit zero, one, or multiple of these (one per text block).
+type AITextData struct {
+	Text string `json:"text"`
+}
+
+// TurnCompleteData carries optional turn metadata. All fields are optional;
+// the mock emits an empty object, the claude provider fills in cost/duration
+// when the upstream `result` event provides them. Error is set only on
+// non-success turn termination.
+type TurnCompleteData struct {
+	CostUSD    float64 `json:"cost_usd,omitempty"`
+	DurationMS int64   `json:"duration_ms,omitempty"`
+	Error      string  `json:"error,omitempty"`
 }
 
 type ToolCallData struct {

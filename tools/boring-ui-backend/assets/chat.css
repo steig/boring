@@ -194,26 +194,240 @@ body {
   100% { content: ""; }
 }
 
-.card.tool      { align-self: flex-start; }
-.card.tool .summary code { font-family: var(--mono); font-size: 0.88em; }
+.card.ai        { align-self: flex-start; }
+.card.ai .summary { white-space: pre-wrap; }
+
+/* --- Tool cards (collapsible, visually subdued) ----------------------
+ * Tool calls stay VISIBLE (transparency about what the AI is doing) but
+ * sit in the background of the conversation flow. <details> gives us
+ * zero-JS expand/collapse; the summary line is the always-visible
+ * human-readable one-liner, the body is the raw JSON args + output. */
+
+.card.tool {
+  align-self: flex-start;
+  padding: 0.3rem 0.55rem 0.35rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-left: 2px solid var(--border);
+  border-radius: 0;
+  margin-left: 0.25rem;
+  max-width: 95%;
+}
+.card.tool[open] {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--border);
+  border-radius: 4px;
+  padding: 0.45rem 0.7rem;
+}
+
+.tool-summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem;
+  line-height: 1.4;
+}
+.tool-summary::-webkit-details-marker { display: none; }
+.tool-summary::marker { content: ""; }
+
+.tool-summary .tool-prefix {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+.tool-summary code.tool-arg {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--fg);
+  background: transparent;
+  padding: 0;
+  word-break: break-all;
+}
+
+.tool-meta-inline {
+  color: var(--muted);
+  font-size: 0.82em;
+  opacity: 0.7;
+}
+
+/* Result line sits under the summary (still inside <summary>) so it shows
+ * when the card is collapsed — the user sees "✓ ok" or "✗ error" at a
+ * glance without expanding. */
+.tool-result-line {
+  display: block;
+  flex-basis: 100%;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  margin-top: 0.15rem;
+  padding-left: 0.85rem;
+  opacity: 0.85;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-result-line.err { color: var(--error); }
+
+.tool-body {
+  margin-top: 0.5rem;
+  padding-top: 0.4rem;
+  border-top: 1px dashed var(--border);
+}
+.tool-body-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 0.3rem 0 0.2rem;
+}
+.tool-body-label:first-child { margin-top: 0; }
+
+.tool-json,
+.tool-output {
+  margin: 0;
+  padding: 0.45rem 0.6rem;
+  background: var(--bg);
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--fg);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Standalone (orphan) tool_result cards — same subdued style. */
+.card.tool.orphan {
+  border-left-color: var(--warn);
+}
+
+/* Per-turn cost badge — small muted line that sits below the AI reply. */
+.turn-badge {
+  align-self: flex-start;
+  font-size: 0.72rem;
+  font-family: var(--mono);
+  color: var(--muted);
+  opacity: 0.7;
+  padding: 0 0.25rem;
+  margin: -0.2rem 0 0.1rem;
+}
+.turn-badge.err { color: var(--error); opacity: 1; }
 
 .card.save      { align-self: stretch; border-color: var(--accent); }
 .card.save a    { color: var(--accent); }
 
 .card.error     { align-self: stretch; border-color: var(--error); color: var(--error); }
 
+/* --- Session cost badge in header ------------------------------------ */
+.session-cost {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+  opacity: 0.85;
+  margin-right: 0.5rem;
+}
+.actions { display: flex; align-items: center; gap: 0.4rem; }
+
 /* --- Preview pane ------------------------------------------------------- */
 
 .preview-pane {
   display: flex;
+  flex-direction: column;
   min-height: 0;
   background: #ffffff;
 }
 
-#preview {
+/* Preview header strip — only rendered when --preview-url is set. Carries
+ * a muted URL display + refresh + open-in-new-tab actions. Sized to be
+ * unobtrusive (~32px) so the iframe gets nearly the full pane height. */
+.preview-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.preview-url {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex: 0 0 auto;
+}
+
+.preview-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 0.95rem;
+  cursor: pointer;
+  text-decoration: none;
+  line-height: 1;
+  transition: border-color 0.12s, color 0.12s;
+}
+.preview-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#preview-iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  min-height: 0;
+}
+
+.preview-fallback {
   width: 100%;
   height: 100%;
-  border: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 2rem;
+  background: var(--bg-elev);
+  color: var(--muted);
+  font-size: 0.95rem;
+  text-align: center;
+}
+.preview-fallback p { margin: 0; }
+.preview-fallback .hint { font-size: 0.85rem; }
+.preview-fallback code {
+  font-family: var(--mono);
+  background: var(--bg-card);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--accent);
 }
 
 /* --- Dialog ------------------------------------------------------------- */
