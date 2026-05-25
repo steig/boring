@@ -4,6 +4,7 @@
 - **Date:** 2026-05-23
 - **Deciders:** Tom (Claude facilitating)
 - **Amends:** [ARD-0001](ard-0001-v1-architecture.md) — the one-line "audit log at `~/.local/share/boring/audit.log` for sensitive-data restores" framing is replaced by the structured tiered system below. A prior thread had suggested deferring audit to v1.1; this ARD reverses that and pins audit + prompt tracing to **v0.3** per [ARD-0008](ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md).
+- **Extended by:** [ARD-0013](ard-0013-headless-boring-run.md) (adds `headless: true` envelope flag), [ARD-0027](ard-0027-opencode-audit-emit-path.md) (adds OpenCode emit path + `agent:` envelope field — same FIFO, same schema)
 - **Related:** [[ard-0001-v1-architecture]], [[ard-0005-security-model-inversion]], [[ard-0006-profile-is-the-trust-anchor]], [[ard-0008-v03-to-v10-release-plan-and-thesis-evolution]], [[ard-0009-guardrails-codegen-architecture]]
 
 ## Context

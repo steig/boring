@@ -4,6 +4,7 @@
 - **Date:** 2026-05-23
 - **Deciders:** Tom (Claude facilitating)
 - **Amends:** [ARD-0004](ard-0004-shopify-first-as-dogfood-path.md) — implementation order step #8 is replaced by the order in this ARD; [ARD-0002](ard-0002-dbx-as-runtime-dependency.md) — secret URI resolution at container start moves from "deferred" to "shipped in v0.2"
+- **Extended by:** [ARD-0008](ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md) (reframes "v0.2 slice" within v0.3 → v1.0 plan), [ARD-0014](ard-0014-preset-versioning-and-v10-preset-list.md) (adds `preset_version:` schema), [ARD-0023](ard-0023-tasks-primitive-for-long-running-processes.md) (**Proposed** — adds `tasks:` as fifth primitive alongside services/volumes/setup/restore)
 - **Related:** [[ard-0001-v1-architecture]], [[ard-0002-dbx-as-runtime-dependency]], [[ard-0004-shopify-first-as-dogfood-path]], [[ard-0005-security-model-inversion]], [[ard-0006-profile-is-the-trust-anchor]]
 
 ## Context

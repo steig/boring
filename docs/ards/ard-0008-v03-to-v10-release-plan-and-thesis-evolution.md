@@ -4,6 +4,7 @@
 - **Date:** 2026-05-23
 - **Deciders:** Tom (Claude facilitating)
 - **Amends:** [ARD-0004](ard-0004-shopify-first-as-dogfood-path.md) — the implementation order's v1/v1.x split is superseded by the phased v0.3 → v1.0 sequence below; [ARD-0007](ard-0007-django-node-and-multi-service-compose.md) — what shipped as "v0.2" no longer represents the v1.0 milestone, just one slice of it.
+- **Extended by:** [ARD-0016](ard-0016-repo-side-safety-nets-as-prerequisite.md) (adds doctor check to v1.0 polish milestone), [ARD-0019](ard-0019-boring-ui-non-engineer-browser-surface.md) (names boring-ui as v1.x flagship after v1.0), [ARD-0023](ard-0023-tasks-primitive-for-long-running-processes.md) (**Proposed** — inserts v0.7 for `tasks:` primitive; see §10 below)
 - **Related:** [[ard-0001-v1-architecture]], [[ard-0002-dbx-as-runtime-dependency]], [[ard-0004-shopify-first-as-dogfood-path]], [[ard-0005-security-model-inversion]], [[ard-0006-profile-is-the-trust-anchor]], [[ard-0007-django-node-and-multi-service-compose]]
 
 ## Context
@@ -40,6 +41,7 @@ Each release ships an internally coherent slice that early adopters can immediat
 | **v0.4** | Containment | 2–3 weeks | Egress enforcement + `--learn-mode` ([ARD-0011](ard-0011-egress-enforcement-via-iptables.md)) |
 | **v0.5** | Real-shape data | ~2 weeks | dbx restore integration ([ARD-0012](ard-0012-dbx-restore-integration.md)) |
 | **v0.6** | Headless / CI | ~2 weeks | `boring run` ([ARD-0013](ard-0013-headless-boring-run.md)) |
+| **v0.7** | Contributor sandbox | ~1 week | `tasks:` primitive — boring open launches the app, not just the sandbox ([ARD-0023](ard-0023-tasks-primitive-for-long-running-processes.md), **Proposed**) |
 | **v1.0** | Polish + distribution | ~2 weeks | Preset versioning ([ARD-0014](ard-0014-preset-versioning-and-v10-preset-list.md)); `curl install.sh \| bash` GA; doctor coverage; docs |
 
 Total: ~3–4 months of work to v1.0, with usable shipped artifacts every 2–6 weeks along the way.
@@ -61,6 +63,10 @@ dbx restore integration ([ARD-0012](ard-0012-dbx-restore-integration.md)) is the
 ### 7. v0.6 closes ARD-0001's "headless as v1 entry point" promise
 
 `boring run` ([ARD-0013](ard-0013-headless-boring-run.md)) is the second consumer of the shared core. Fresh container per invocation; Claude prompt as input; secret resolution via the same code path as `boring open`. Shipping this second-to-last rather than first means every piece it consumes is already battle-tested on the interactive path.
+
+### 7.5. v0.7 closes the "boring open and the app isn't running" gap (added by ARD-0023)
+
+[ARD-0023](ard-0023-tasks-primitive-for-long-running-processes.md) introduces a `tasks:` primitive — long-running processes inside the dev container (the app servers, in practice) supervised by tmux, launched after `setup:` completes. Inserted between v0.6 and v1.0 because (a) it is editor-agnostic and `boring run`-aware, so it depends on v0.6's headless cleanup landing first, and (b) it is small enough (~1 week) to slot before v1.0 without pushing the v1.0 date materially. Status of ARD-0023 itself is **Proposed**; v0.7 is conditional on that ARD being accepted. If ARD-0023 is rejected or deferred, v0.7 collapses into v1.0 or disappears.
 
 ### 8. v1.0 is polish + distribution, not new features
 
@@ -113,6 +119,7 @@ This ARD is itself an order — the v0.3 → v1.0 sequence above. The ARDs it re
 2. **v0.4** — [ARD-0011](ard-0011-egress-enforcement-via-iptables.md) (egress + `--learn-mode`). 2–3 weeks.
 3. **v0.5** — [ARD-0012](ard-0012-dbx-restore-integration.md) (dbx restore + `restore:` schema). 2 weeks (excluding upstream dbx PRs).
 4. **v0.6** — [ARD-0013](ard-0013-headless-boring-run.md) (`boring run`). 2 weeks.
-5. **v1.0** — [ARD-0014](ard-0014-preset-versioning-and-v10-preset-list.md) (preset versioning + canonical list); `install.sh` GA (requires public-repo flip); doctor coverage expansion; v1.0 docs + marketing-site reconciliation. 2 weeks.
+5. **v0.7** — [ARD-0023](ard-0023-tasks-primitive-for-long-running-processes.md) (`tasks:` primitive, **Proposed**). ~1 week. Conditional on ARD-0023 being accepted.
+6. **v1.0** — [ARD-0014](ard-0014-preset-versioning-and-v10-preset-list.md) (preset versioning + canonical list); `install.sh` GA (requires public-repo flip); doctor coverage expansion; v1.0 docs + marketing-site reconciliation. 2 weeks.
 
 Each release ships as a `git tag v0.X.0` on `main`, with a CHANGELOG entry referencing its driving ARDs. v1.0 is the single release that updates `docs/index.html`, the README's tagline, and the `curl | bash` installer URL to public.

@@ -4,6 +4,7 @@
 - **Date:** 2026-05-23
 - **Deciders:** Tom (Claude facilitating)
 - **Amends:** [ARD-0001](ard-0001-v1-architecture.md) — security framing — and [ARD-0004](ard-0004-shopify-first-as-dogfood-path.md) — implementation order
+- **Extended by:** [ARD-0009](ard-0009-guardrails-codegen-architecture.md) (closes §3 codegen deferral), [ARD-0011](ard-0011-egress-enforcement-via-iptables.md) (closes §4 egress deferral), [ARD-0016](ard-0016-repo-side-safety-nets-as-prerequisite.md) (extends containment past container boundary), [ARD-0017](ard-0017-agent-workflow-rules-derived-from-guardrails.md) (agent workflow defaults), [ARD-0018](ard-0018-vscode-extension-security-and-profile-declaration.md) (extension trust boundary), [ARD-0019](ard-0019-boring-ui-non-engineer-browser-surface.md) (security model applies to second surface), [ARD-0022](ard-0022-boring-ui-session-and-trust-model.md) (silent execution as trust UX)
 - **Related:** [[ard-0001-v1-architecture]], [[ard-0004-shopify-first-as-dogfood-path]]
 
 ## Context

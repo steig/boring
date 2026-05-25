@@ -4,6 +4,7 @@
 - **Date:** 2026-05-23
 - **Deciders:** Tom (Claude facilitating)
 - **Supersedes:** the standalone `project_v1_architecture.md` memo from earlier in the same session
+- **Extended by:** [ARD-0002](ard-0002-dbx-as-runtime-dependency.md) (secrets — see §-callouts at lines 72, 128), [ARD-0005](ard-0005-security-model-inversion.md) (security framing), [ARD-0010](ard-0010-audit-log-and-prompt-tracing-infrastructure.md) (audit log reframed), [ARD-0018](ard-0018-vscode-extension-security-and-profile-declaration.md) (adds `extensions:` to profile schema), [ARD-0019](ard-0019-boring-ui-non-engineer-browser-surface.md) (adds second user-facing surface)
 - **Related:** [[project-intent]], [[project-pillars]], [[convention-ards]]
 
 ## Context

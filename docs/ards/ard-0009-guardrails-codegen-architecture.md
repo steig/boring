@@ -4,6 +4,7 @@
 - **Date:** 2026-05-23
 - **Deciders:** Tom (Claude facilitating)
 - **Amends:** [ARD-0005](ard-0005-security-model-inversion.md) — §3 "Enforcement lives in the container, not in boring's host process" specified three artifacts but deferred the codegen to v1.x. This ARD closes that deferral and pins the architecture for shipping them in v0.3 per [ARD-0008](ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md).
+- **Extended by:** [ARD-0017](ard-0017-agent-workflow-rules-derived-from-guardrails.md) (adds CLAUDE.md as 4th artifact), [ARD-0018](ard-0018-vscode-extension-security-and-profile-declaration.md) (codegen writes extensions into devcontainer.json), [ARD-0022](ard-0022-boring-ui-session-and-trust-model.md) (adds `allowed_paths:` + `save:` to schema), [ARD-0026](ard-0026-harness-agnostic-guardrails-and-path-allowlist.md) (renames `allowed_claude_tools:` → `allowed_tools:` + per-harness translation; adds OpenCode permission config as 5th artifact), [ARD-0028](ard-0028-agents-md-codegen-sibling-to-claude-md.md) (AGENTS.md sibling to CLAUDE.md). See "Codegen artifact inventory" below for the canonical list.
 - **Related:** [[ard-0005-security-model-inversion]], [[ard-0006-profile-is-the-trust-anchor]], [[ard-0007-django-node-and-multi-service-compose]], [[ard-0008-v03-to-v10-release-plan-and-thesis-evolution]]
 
 ## Context
@@ -96,6 +97,24 @@ This shape keeps the responsibilities clean: `compose.sh` knows about compose; `
 - **Bundle the codegen into `lib/compose.sh`.** Rejected: `compose.sh` is already 229 lines of compose+devcontainer emission. Adding three more unrelated artifacts there is a 500-line file in three months. New module is cheap; refactoring out later is not.
 - **Use a single mount under `/etc/boring/` for all three artifacts instead of separate paths.** Rejected: the artifacts have different audiences (git, shell, Claude) and different conventional locations on a Unix system. Putting `pre-push` somewhere other than where git looks for hooks (via `core.hooksPath`) means adding indirection that someone debugging will have to chase.
 - **Per-user (per-developer) guardrails overrides.** Rejected here for the same reason ARD-0005 rejected them at the schema level: guardrails are repo-state. If a user needs different rules, they fork the profile or use the user-local overlay (both visible and reviewable).
+
+## Codegen artifact inventory (canonical)
+
+This ARD originally defined three artifacts; later ARDs added more. The list below is the single canonical roll-up — other ARDs (0017, 0018, 0022, 0026, 0028) may reference items by name but should not re-enumerate. To avoid the counting confusion that crept in during the 0026/0028 round, the canonical count is **seven generated artifacts** (the CLAUDE.md/AGENTS.md pair counts as two, not one).
+
+| # | Artifact | Added by | Generated to (host) | Mounted at (container, RO) |
+|---|---|---|---|---|
+| 1 | Pre-push git hook | ARD-0009 (this ARD) | `.devcontainer/boring-runtime/git-hooks/pre-push` | `/etc/boring/git-hooks/pre-push` |
+| 2 | Command wrappers | ARD-0009 (this ARD) | `.devcontainer/boring-runtime/bin/<cmd>` | `/usr/local/boring/bin/<cmd>` |
+| 3 | Merged Claude `settings.json` | ARD-0009 (this ARD) | `.devcontainer/boring-runtime/claude/settings.json` | `/home/dev/.claude/settings.json` |
+| 4 | Per-profile `workflow-profile.md` snippet | [ARD-0017](ard-0017-agent-workflow-rules-derived-from-guardrails.md) | `.boring/codegen/workflow-profile.md` | `/workspace/.boring/codegen/workflow-profile.md` (via repo bind) |
+| 5 | `extensions:` + `extension_settings:` written into `devcontainer.json` | [ARD-0018](ard-0018-vscode-extension-security-and-profile-declaration.md) | `.devcontainer/devcontainer.json` | (consumed by Dev Containers extension at attach) |
+| 6 | OpenCode permission config | [ARD-0026](ard-0026-harness-agnostic-guardrails-and-path-allowlist.md) | `.devcontainer/boring-runtime/opencode/permissions.json` | `/etc/boring/opencode-permissions.json` |
+| 7 | `CLAUDE.md` / `AGENTS.md` pair | [ARD-0017](ard-0017-agent-workflow-rules-derived-from-guardrails.md) + [ARD-0028](ard-0028-agents-md-codegen-sibling-to-claude-md.md) | `.boring/codegen/CLAUDE.md` + `.boring/codegen/AGENTS.md` | `/home/dev/.claude/CLAUDE.md` + `/home/dev/.config/opencode/AGENTS.md` |
+
+Also load-bearing but not counted as separate artifacts: the `allowed_paths:` allowlist ([ARD-0022](ard-0022-boring-ui-session-and-trust-model.md) §5 + [ARD-0026](ard-0026-harness-agnostic-guardrails-and-path-allowlist.md) §3) feeds into artifacts 3 and 6 (Claude `deny` rules + OpenCode tool-call wrapper); it is not a separate file.
+
+All seven artifacts join the trust-anchor surface ([ARD-0006](ard-0006-profile-is-the-trust-anchor.md)) automatically via the host-writes/container-reads-RO pattern from §3. New ARDs that add codegen outputs should append a row here, not re-state the pattern.
 
 ## Implementation Order
 

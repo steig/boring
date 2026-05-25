@@ -25,6 +25,19 @@ If you're looking for the **convention** for writing new ARDs (full vs. mini, nu
 | [0013](ard-0013-headless-boring-run.md) | 2026-05-23 | Headless `boring run` | One-shot Claude invocation in a profile-scoped sandbox; fresh container per run, torn down with `docker compose down -v` on exit. |
 | [0014](ard-0014-preset-versioning-and-v10-preset-list.md) | 2026-05-23 | Preset versioning + v1.0 preset list | Versions parameterized via Dockerfile ARGs + a `preset_version:` profile map; v1.0 ships `python`, `node`, `node-postgres`, `django-node`, `shopify`. |
 | [0015](ard-0015-ulogd2-sidecar-for-cross-platform-learn-mode.md) | 2026-05-24 | `ulogd2` sidecar for cross-platform `--learn-mode` | Replaces the dmesg-based learn-mode reader so the feature works on Mac+Orbstack, not just Linux native. |
+| [0016](ard-0016-repo-side-safety-nets-as-prerequisite.md) | 2026-05-24 | Repo-side safety nets as a boring prerequisite | Branch protection + per-preset PR templates; `boring doctor` checks them at v1.0; extends ARD-0005 past the container boundary. |
+| [0017](ard-0017-agent-workflow-rules-derived-from-guardrails.md) | 2026-05-24 | Agent workflow rules from `guardrails:` | Universal preset-baked `CLAUDE.md` + per-profile snippet derived from `guardrails:` at codegen; rules are defaults, not constraints. |
+| [0018](ard-0018-vscode-extension-security-and-profile-declaration.md) | 2026-05-24 | VS Code extensions are profile-declared | `extensions:` + `extension_settings:` profile fields with preset defaults and runtime-add lock (v0.4 egress backstop); Marketplace-only at v1.0. |
+| [0019](ard-0019-boring-ui-non-engineer-browser-surface.md) | 2026-05-24 | boring-ui — non-engineer browser surface (umbrella) | Second user-facing surface alongside `boring open`; browser chat + live preview; v1.x flagship after v1.0. |
+| [0020](ard-0020-opencode-as-boring-ui-agent-harness.md) | 2026-05-24 | OpenCode as boring-ui's agent harness | Sub-ARD of 0019; subscription-billing verification is the precondition gate; v1.x ships Claude-only even if Codex/Gemini verify. |
+| [0021](ard-0021-boring-ui-host-proxy-and-project-picker.md) | 2026-05-24 | boring-ui host proxy + project picker | Sub-ARD of 0019; always-running proxy at `https://boring.local/`; mkcert TLS; path-routing; Unix-socket isolation. |
+| [0022](ard-0022-boring-ui-session-and-trust-model.md) | 2026-05-24 | boring-ui session + trust model | Sub-ARD of 0019; single chat per project; hidden auto-branching; silent execution + inline diffs + per-action undo; path allowlist; `save:` block. |
+| [0023](ard-0023-tasks-primitive-for-long-running-processes.md) | 2026-05-24 | `tasks:` primitive for long-running processes (**Proposed**) | New profile primitive — tmux-supervised app servers launched after `setup:`; closes the "boring open and the app isn't running" gap. Targets v0.7. |
+| 0024 | — | *(unused — slot retained for future use)* | — |
+| 0025 | — | *(unused — slot retained for future use)* | — |
+| [0026](ard-0026-harness-agnostic-guardrails-and-path-allowlist.md) | 2026-05-24 | Harness-agnostic guardrails + path allowlist (mini-ARD) | Renames `allowed_claude_tools:` → `allowed_tools:`; adds per-harness translation; adds `allowed_paths:`/`disallowed_paths:`. Amends ARD-0009. |
+| [0027](ard-0027-opencode-audit-emit-path.md) | 2026-05-24 | OpenCode audit emit path (mini-ARD) | Same FIFO + new `agent:` envelope field; native-hooks-or-wrapper fallback; `boring audit --agent` filter. Amends ARD-0010. |
+| [0028](ard-0028-agents-md-codegen-sibling-to-claude-md.md) | 2026-05-24 | `AGENTS.md` codegen sibling to `CLAUDE.md` (mini-ARD) | Same source emits both files; per-harness template substitutions; project-root `AGENTS.md` preserved. Amends ARD-0017. |
 
 ## What "Status" means on each ARD
 
@@ -38,8 +51,9 @@ Every ARD's header carries a `Status:` line:
 ## How to navigate
 
 - **Reading order for the architecture:** ARD-0001 → ARD-0005 → ARD-0006 → ARD-0008 covers the spine.
-- **Reading order for security model:** ARD-0005 (framing) → ARD-0006 (trust anchor) → ARD-0009 (codegen) → ARD-0010 (audit) → ARD-0011 (egress).
+- **Reading order for security model:** ARD-0005 (framing) → ARD-0006 (trust anchor) → ARD-0009 (codegen) → ARD-0010 (audit) → ARD-0011 (egress) → ARD-0016 (repo-side safety nets) → ARD-0017 (agent workflow rules) → ARD-0018 (extensions).
 - **Reading order for the dogfood path:** ARD-0004 → ARD-0007 → ARD-0008.
 - **Reading order for the data story:** ARD-0002 → ARD-0012.
+- **Reading order for boring-ui (v1.x flagship):** ARD-0019 (umbrella) → ARD-0020 (OpenCode harness) → ARD-0021 (host proxy) → ARD-0022 (session + trust). Mini-ARDs ARD-0026 (harness-agnostic guardrails), ARD-0027 (audit emit), and ARD-0028 (`AGENTS.md` sibling) are the homework that landed alongside the boring-ui umbrella.
 
 If you're new to the project, start with the [Getting Started](../getting-started.md) page first — it's the operational shape of all of this in 5 minutes of reading.
