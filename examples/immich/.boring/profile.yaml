@@ -1,0 +1,112 @@
+# Immich (dev-on-immich) example profile.
+#
+# Scope: a Claude-safe sandbox for contributing to the Immich codebase
+# (https://github.com/immich-app/immich) — the NestJS server + SvelteKit web
+# frontend. Brings up the same flavor of sidecars Immich's own dev compose
+# uses: their custom Postgres image (VectorChord + pgvecto.rs), Valkey, and
+# the published immich-machine-learning image.
+#
+# Not for self-hosting Immich. For self-hosting use Immich's docker-compose.
+#
+# Uses stack.dockerfile: rather than a preset. Immich's NestJS API has too
+# many hardcoded /usr/src/app/... paths and native deps (libvips, libheif,
+# ffmpeg, reverse-geocoding data) to fit into a generic preset; the custom
+# Dockerfile at .devcontainer/Dockerfile FROM's their base-server-dev image
+# so all of that comes pre-baked and the API actually boots.
+#
+# Diverges from upstream Immich's own .devcontainer/devcontainer.json — this
+# profile is opinionated as a contributor sandbox, not a clone of their
+# setup. Active ML-service contributors should keep using upstream's
+# devcontainer instead, since this profile pins a release image rather than
+# building from ../machine-learning.
+#
+# Copy this directory to <your-immich-clone>/.boring/profile.yaml and
+# <your-immich-clone>/.devcontainer/Dockerfile, then run `boring open .`
+# from the clone root.
+
+profile_version: "1"
+name: immich-example
+
+# stack.dockerfile path is relative to the repo root (boring's compose
+# generator sets build context to the repo root). The Dockerfile next to
+# this profile pins the upstream base-image tag — sync both when you sync
+# the clone.
+stack:
+  dockerfile: .devcontainer/Dockerfile
+
+# Sidecars mirror Immich's docker/docker-compose.dev.yml: their custom
+# postgres flavor (NOT vanilla pgvector — VectorChord + pgvecto.rs),
+# Valkey in place of Redis, and the ML service from its published release
+# tag.
+services:
+  - name: database
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
+    env:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: immich
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - immich-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "immich"]
+      interval: 5s
+      retries: 20
+
+  - name: redis
+    image: valkey/valkey:9
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  - name: immich-machine-learning
+    image: ghcr.io/immich-app/immich-machine-learning:release
+    volumes:
+      - immich-model-cache:/cache
+
+volumes:
+  - immich-postgres-data
+  - immich-model-cache
+
+# 2283: API server. 3000: SvelteKit web. 9230/9231: Node debuggers.
+# The ML service's :3003 stays internal to the compose network.
+forward_ports: [2283, 3000, 9230, 9231]
+
+env:
+  # Immich's standard env-var names. Hostnames are the compose service
+  # names above. Defaults match upstream's docker/example.env so the
+  # server boots without further configuration.
+  DB_HOSTNAME: database
+  DB_PORT: "5432"
+  DB_USERNAME: postgres
+  DB_PASSWORD: postgres
+  DB_DATABASE_NAME: immich
+  REDIS_HOSTNAME: redis
+  REDIS_PORT: "6379"
+  IMMICH_MACHINE_LEARNING_URL: "http://immich-machine-learning:3003"
+  IMMICH_ENV: development
+
+# First-run setup. The base-server-dev image already has corepack + pnpm,
+# so we skip the corepack dance the generic preset version had. The
+# /usr/src/app symlink is created at image build time (see Dockerfile);
+# we don't re-link here because /usr/src/ is root-owned. The plugin-sdk +
+# sdk pre-builds are required for the NestJS server and Vite to resolve
+# the workspace imports.
+#
+# Immich's StorageService system-integrity check requires a `.immich` marker
+# file in each of six upload subdirs (encoded-video, thumbs, backups, library,
+# profile, upload) — without them the microservices worker exits at boot and
+# the api process gets killed. Create them all here. See:
+# https://docs.immich.app/administration/system-integrity#folder-checks
+setup:
+  - mkdir -p /workspace/upload/{encoded-video,thumbs,backups,library,profile,upload}
+  - for d in encoded-video thumbs backups library profile upload; do touch /workspace/upload/$d/.immich; done
+  - pnpm install
+  - pnpm --filter @immich/sdk build
+  - pnpm --filter @immich/plugin-sdk build
+
+# Guardrails: the Claude-safety contract for this sandbox. Forbid pushing
+# to the branches an in-container agent could damage upstream.
+guardrails:
+  forbid_branches: [main, "release/*"]
