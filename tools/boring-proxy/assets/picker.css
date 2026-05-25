@@ -1,0 +1,132 @@
+/* picker.css — minimal styling for the v0 project picker (ARD-0021 §3). */
+
+:root {
+  --bg: #fafafa;
+  --fg: #1a1a1a;
+  --muted: #6b6b6b;
+  --card: #ffffff;
+  --border: #e3e3e3;
+  --accent: #2d6cdf;
+  --green: #2ea043;
+  --yellow: #d4a72c;
+  --gray: #8a8a8a;
+  --red: #cf222e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.5;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.5rem;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.user {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.sep { margin: 0 0.5rem; opacity: 0.5; }
+
+.link { color: var(--accent); text-decoration: none; }
+.link:hover { text-decoration: underline; }
+
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 1.25rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.05s;
+}
+.card:hover { border-color: var(--accent); }
+.card:active { transform: scale(0.995); }
+
+.card .name {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.badge {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 12px;
+  background: #eee;
+  color: var(--muted);
+  text-transform: lowercase;
+  font-weight: 500;
+}
+.badge.running { background: #e6f4ea; color: var(--green); }
+.badge.starting { background: #fff4d6; color: var(--yellow); }
+.badge.stopped { background: #f0f0f0; color: var(--gray); }
+.badge.error { background: #ffeef0; color: var(--red); }
+
+.card .summary {
+  font-size: 0.9rem;
+  color: var(--muted);
+  min-height: 1.5em;
+}
+
+.card.add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-weight: 500;
+  border-style: dashed;
+}
+
+.empty {
+  color: var(--muted);
+  padding: 2rem;
+  text-align: center;
+  background: var(--card);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+.error {
+  background: #ffeef0;
+  color: var(--red);
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}

@@ -84,3 +84,21 @@ jobs:
         run: |
           export PATH="$PWD:$PATH"
           scripts/test.sh -v
+
+  go-tests:
+    name: go test (proxy) + race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/boring-proxy/go.mod
+          cache-dependency-path: tools/boring-proxy/go.sum
+
+      - name: build, vet, test (race)
+        working-directory: tools/boring-proxy
+        run: |
+          go build ./...
+          go vet ./...
+          go test -race -count=1 ./...
