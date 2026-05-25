@@ -86,6 +86,21 @@ env:
   REDIS_PORT: "6379"
   IMMICH_MACHINE_LEARNING_URL: "http://immich-machine-learning:3003"
   IMMICH_ENV: development
+  # IMMICH_HOST must be set explicitly for boring's same-container setup:
+  # we run the immich API + the Vite web dev server in the same dev container,
+  # and Vite's HTTP proxy uses 127.0.0.1 to reach the API. Without this var,
+  # Node 22+ binds the API only to IPv6 ::1, and Vite's IPv4 proxy hits
+  # ECONNREFUSED -> the web UI shows "Error 502" loading server config.
+  # Upstream immich's docker-compose.dev.yml dodges this by putting server +
+  # web in separate containers and pointing the proxy at the server's compose
+  # service name; we collapse them into one container, so the API must bind
+  # to all interfaces.
+  IMMICH_HOST: "0.0.0.0"
+  # web/vite.config.ts's default proxy target is `http://immich-server:2283/`
+  # — a compose service name that exists in upstream's split-container setup
+  # but NOT here (server + web share one container). Pointing the proxy at
+  # localhost completes the fix paired with IMMICH_HOST above.
+  IMMICH_SERVER_URL: "http://localhost:2283/"
 
 # First-run setup. The base-server-dev image already has corepack + pnpm,
 # so we skip the corepack dance the generic preset version had. The
@@ -100,8 +115,7 @@ env:
 # the api process gets killed. Create them all here. See:
 # https://docs.immich.app/administration/system-integrity#folder-checks
 setup:
-  - mkdir -p /workspace/upload/{encoded-video,thumbs,backups,library,profile,upload}
-  - for d in encoded-video thumbs backups library profile upload; do touch /workspace/upload/$d/.immich; done
+  - for d in encoded-video thumbs backups library profile upload; do mkdir -p /workspace/upload/$d && touch /workspace/upload/$d/.immich; done
   - pnpm install
   - pnpm --filter @immich/sdk build
   - pnpm --filter @immich/plugin-sdk build
