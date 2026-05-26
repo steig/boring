@@ -4,7 +4,15 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.7.1` — bugfix release for the install.sh path collision below; no CLI behavior changes vs v0.7.0. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) and boring-ui (ARDs 0019-0022, 0029) still ahead.
+VERSION is `0.7.2` — bugfix releases for ship-blockers reported within the first hour of v0.7.0 going live. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) and boring-ui (ARDs 0019-0022, 0029) still ahead.
+
+## [0.7.2] — 2026-05-26
+
+### Fixed
+
+- **`egress_write_allowlist_file` re-runs now succeed.** v0.7.1 and earlier wrote `.devcontainer/boring-runtime/egress.allow` then `chmod 0444`'d it (so an in-container agent can't overwrite via the bind mount). Subsequent `boring open` invocations on the same repo failed with `EACCES` at `lib/egress.sh:31` because the redirect `>` couldn't open a 0444 file for writing. Fix: write to `.tmp`, `chmod 0444 .tmp`, then `mv -f` (atomic rename works against the parent dir's perms, bypasses the destination's read-only mode). Matches the `atomicWriteFile` pattern in `tools/boring-proxy/atomic.go`.
+
+  Immediate workaround for users on v0.7.0/v0.7.1: `chmod +w <repo>/.devcontainer/boring-runtime/egress.allow` once; v0.7.2+ doesn't need it.
 
 ## [0.7.1] — 2026-05-26
 
