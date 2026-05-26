@@ -82,3 +82,80 @@ secret_resolve() {
       ;;
   esac
 }
+
+# ---------------------------------------------------------------------------
+# Provisioning helpers (ARD-0032).
+#
+# boring stays a resolver, not a store of its own: these write into the OS's
+# EXISTING keyring (macOS Keychain / Linux libsecret) — the same backend the
+# `keychain:` scheme above reads. boring owns no store. The intent is one-time,
+# host-side provisioning (e.g. an engineer dropping a Theme Access token onto a
+# non-engineer's machine at onboarding) so `secret://keychain:<service>/<account>`
+# resolves with zero per-use auth.
+#
+# All three take a bare `<service>/<account>` (the tail of a keychain: URI).
+# secret_set reads the value from STDIN, keeping it out of the shell's history
+# and boring's own argv. NOTE: macOS `security add-generic-password` has no
+# stdin password input, so the `-w "$value"` below briefly places the secret in
+# the `security` process's own argv (visible to `ps` for that instant). The
+# Linux path pipes via stdin to `secret-tool`, which has no such window.
+# Acceptable for one-time onboarding on a single-user host; documented, not hidden.
+
+# Split "<service>/<account>" into _SECRET_SVC / _SECRET_ACCT globals.
+# Uses if/fi (not `[[ ]] && die`) so the valid path returns 0 — a trailing
+# false `[[ ]] && die` would return 1 and trip the caller's `set -e`.
+_secret_parse_ref() {
+  local ref="$1"
+  [[ -n "$ref" ]] || die "secret: missing <service>/<account> reference"
+  _SECRET_SVC="${ref%%/*}"
+  _SECRET_ACCT="${ref#*/}"
+  if [[ "$_SECRET_SVC" == "$ref" || -z "$_SECRET_SVC" || -z "$_SECRET_ACCT" ]]; then
+    die "secret: reference must be <service>/<account> (got: $ref)"
+  fi
+}
+
+secret_set() {
+  _secret_parse_ref "${1:-}"
+  # Fail fast instead of appearing to hang on a terminal waiting for EOF.
+  if [[ -t 0 ]]; then
+    die "secret set: nothing piped on stdin — pipe the secret in, e.g. printf %s \"\$TOKEN\" | boring secret set $1"
+  fi
+  local value
+  value="$(cat)"
+  [[ -n "$value" ]] || die "secret set: empty value on stdin (pipe the secret in, e.g. printf %s \"\$TOKEN\" | boring secret set $1)"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    # -U updates the item in place if it already exists (rotation), else creates.
+    security add-generic-password -U -s "$_SECRET_SVC" -a "$_SECRET_ACCT" -w "$value" \
+      || die "secret set: keychain write failed for $1"
+  else
+    require_cmd secret-tool "Install libsecret-tools (apt install libsecret-tools)"
+    printf '%s' "$value" | secret-tool store --label="boring:$1" service "$_SECRET_SVC" account "$_SECRET_ACCT" \
+      || die "secret set: secret-tool store failed for $1"
+  fi
+  log_success "stored secret for keychain:$1"
+}
+
+secret_get() {
+  _secret_parse_ref "${1:-}"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    security find-generic-password -s "$_SECRET_SVC" -a "$_SECRET_ACCT" -w \
+      || die "secret get: no keychain item for $1"
+  else
+    require_cmd secret-tool "Install libsecret-tools (apt install libsecret-tools)"
+    secret-tool lookup service "$_SECRET_SVC" account "$_SECRET_ACCT" \
+      || die "secret get: no keychain item for $1"
+  fi
+}
+
+secret_rm() {
+  _secret_parse_ref "${1:-}"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    security delete-generic-password -s "$_SECRET_SVC" -a "$_SECRET_ACCT" >/dev/null 2>&1 \
+      || die "secret rm: no keychain item for $1"
+  else
+    require_cmd secret-tool "Install libsecret-tools (apt install libsecret-tools)"
+    secret-tool clear service "$_SECRET_SVC" account "$_SECRET_ACCT" \
+      || die "secret rm: secret-tool clear failed for $1"
+  fi
+  log_success "removed secret for keychain:$1"
+}
