@@ -3,7 +3,7 @@
 # boring — dev container launcher for wrapped apps
 # https://github.com/steig/boring
 #
-VERSION="0.7.2"
+VERSION="0.7.3"
 #
 # Usage:
 #   boring open <git-url|.>                          Clone or attach a boring-enabled repo

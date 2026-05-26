@@ -56,8 +56,12 @@ RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh \
  && mv /root/.local/bin/uv /usr/local/bin/uv
 
 # Claude Code CLI as a global npm package (current stable channel).
+# corepack enable runs as root at build time so the dev user doesn't try to
+# symlink into /usr/bin/ at postCreateCommand time (EACCES). Projects pin
+# their own pnpm/yarn version via `packageManager` in package.json.
 RUN npm install -g @anthropic-ai/claude-code \
- && npm cache clean --force
+ && npm cache clean --force \
+ && corepack enable
 
 # Non-root dev user matching host UID/GID 1000 so bind-mounted /workspace is
 # writable without chown dance. NOPASSWD sudo so setup: can `sudo touch`

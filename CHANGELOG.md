@@ -4,7 +4,15 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.7.2` — bugfix releases for ship-blockers reported within the first hour of v0.7.0 going live. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) and boring-ui (ARDs 0019-0022, 0029) still ahead.
+VERSION is `0.7.3` — third ship-blocker bugfix release in the same hour as v0.7.0. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) and boring-ui (ARDs 0019-0022, 0029) still ahead.
+
+## [0.7.3] — 2026-05-26
+
+### Fixed
+
+- **`corepack enable` no longer fails in `postCreateCommand` for `shopify` + `django-node` presets.** Both presets install Node 20 via NodeSource, which does NOT enable corepack by default (unlike the official `node` Docker image). Profiles that included `corepack enable` in `setup:` then hit `EACCES: permission denied, symlink ... -> /usr/bin/pnpm` because the `dev` user can't write to `/usr/bin/`. Fix: add `corepack enable` at image-build time (as root) right after the `npm install -g` line in both Dockerfiles. Profiles can keep `corepack enable` in `setup:` for idempotence or drop it; `pnpm install` works either way. The `python` preset is intentionally unchanged — it ships without runtime npm by design (use `node` / `node-postgres` / `django-node` for Node-needing projects).
+
+  **For users on v0.7.0-0.7.2 with a built shopify/django-node container:** the new Dockerfile only takes effect on container rebuild. Either `docker exec -u root <profile>-dev-1 corepack enable` to patch the running container in place (lasts until next recreate), OR `cd <repo>/.devcontainer && docker compose down && docker image rm <profile>-dev` then `boring open .` to rebuild from the new Dockerfile.
 
 ## [0.7.2] — 2026-05-26
 

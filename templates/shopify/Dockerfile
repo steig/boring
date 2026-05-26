@@ -36,8 +36,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Shopify CLI + Claude Code CLI as global npm packages (current stable channel).
 # Verified npm package names: @shopify/cli, @anthropic-ai/claude-code.
+# corepack enable runs as root at build time so the dev user doesn't try to
+# symlink into /usr/bin/ at postCreateCommand time (EACCES). Projects pin
+# their own pnpm/yarn version via `packageManager` in package.json; corepack
+# switches to that on use.
 RUN npm install -g @shopify/cli @anthropic-ai/claude-code \
- && npm cache clean --force
+ && npm cache clean --force \
+ && corepack enable
 
 # Non-root dev user matching host UID/GID 1000 so bind-mounted /workspace is writable without chown dance.
 RUN groupadd --gid 1000 dev \
