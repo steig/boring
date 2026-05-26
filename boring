@@ -3,10 +3,11 @@
 # boring — dev container launcher for wrapped apps
 # https://github.com/steig/boring
 #
-VERSION="0.8.1"
+VERSION="0.9.0"
 #
 # Usage:
-#   boring open [--ui|--no-ui] <git-url|.>           Clone or attach a boring-enabled repo
+#   boring open [--ui|--no-ui] [--no-dev] <git-url|.>
+#                                                    Clone or attach a boring-enabled repo
 #   boring run "<prompt>" --profile <name> [--repo <path>]
 #                                                    Headless one-shot Claude (ARD-0013)
 #   boring wip {start|commit|discard} <profile|.>    WIP-branch lifecycle (ARD-0022 §3)
@@ -77,11 +78,16 @@ cmd_open() {
   local learn_mode=0
   # ui_flag: "" = unset (profile decides), "on" = --ui forced, "off" = --no-ui forced.
   local ui_flag=""
+  # no_dev: 0 = run dev.command if profile sets it (default), 1 = skip and drop
+  # to bash shell. Added in v0.9.0 (ARD-0030) so engineers can opt out of the
+  # foreground dev-command UX when they just want a debug shell.
+  local no_dev=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --learn-mode) learn_mode=1; shift ;;
       --ui)         ui_flag="on"; shift ;;
       --no-ui)      ui_flag="off"; shift ;;
+      --no-dev)     no_dev=1; shift ;;
       --) shift; break ;;
       -*) die "boring open: unknown flag $1" ;;
       *) [[ -z "$target" ]] && target="$1" || die "boring open: extra argument $1"; shift ;;
@@ -108,11 +114,21 @@ cmd_open() {
   # Stash for the SIGINT/SIGTERM/EXIT trap below — the trap fires in a
   # context where local variables of this function aren't visible.
   BORING_OPEN_PROFILE_NAME="$name"
-  # INT/TERM: graceful tear-down + non-zero exit (130 = SIGINT convention).
-  trap '_cmd_open_stop_audit_collector "$BORING_OPEN_PROFILE_NAME"; exit 130' INT TERM
-  # EXIT: catch the "boring crashed unexpectedly" path so we don't orphan the
-  # collector subshell. Idempotent with the INT/TERM teardown above.
-  trap '_cmd_open_stop_audit_collector "${BORING_OPEN_PROFILE_NAME:-}"' EXIT
+  # v0.9.0: UI teardown also rides the EXIT trap when --ui was enabled. The
+  # _cmd_open_maybe_start_ui helper sets this flag to "1" after a successful
+  # UI bring-up; the EXIT teardown calls web_ui_stop only when set. The flag
+  # lives outside the function scope so the trap (which fires in the global
+  # context per bash semantics) can see it.
+  BORING_OPEN_UI_STARTED=0
+  # INT/TERM: print the SIGINT convention exit code and let EXIT do the
+  # teardown. devcontainer exec frequently eats SIGINT itself; centralizing
+  # teardown in EXIT means we still clean up no matter which trap actually
+  # fires.
+  trap 'exit 130' INT TERM
+  # EXIT: single source of teardown. Runs the audit-collector stop + UI stop
+  # (no-op if UI wasn't started). Both helpers are idempotent so a redundant
+  # call from INT-then-EXIT cascade is harmless.
+  trap '_cmd_open_teardown_all "${BORING_OPEN_PROFILE_NAME:-}" "${BORING_OPEN_UI_STARTED:-0}"' EXIT
 
   # Resolve !secret URIs into a --remote-env arg list. Resolved secret values
   # never touch disk: compose.sh skips secret-kind env, and these args are
@@ -167,7 +183,10 @@ cmd_open() {
       export BORING_EGRESS_MODE=learn
       log_info "egress: --learn-mode active (LOG-only, no REJECT)"
       BORING_OPEN_LEARN_REPO="$repo"
-      trap '_cmd_open_emit_learn_diff "$BORING_OPEN_LEARN_REPO"; _cmd_open_stop_audit_collector "$BORING_OPEN_PROFILE_NAME"; exit 130' INT TERM
+      # Re-wire the EXIT trap to also emit the learn-mode diff before the
+      # audit + UI teardown fires. INT/TERM still just exit 130; EXIT does the
+      # work (consistent with v0.9.0 trap consolidation above).
+      trap '_cmd_open_emit_learn_diff "$BORING_OPEN_LEARN_REPO"; _cmd_open_teardown_all "${BORING_OPEN_PROFILE_NAME:-}" "${BORING_OPEN_UI_STARTED:-0}"' EXIT
     else
       log_warn "egress: --learn-mode requested but profile has no egress.allow — nothing to learn"
     fi
@@ -193,22 +212,18 @@ cmd_open() {
   # so claude inside the container has whatever the profile expected to be installed.
   _cmd_open_maybe_start_ui "$profile_json" "$repo" "$name" "$ui_flag"
 
-  # The collector keeps running across the container's lifetime; the user
-  # signals shutdown with Ctrl-C, which the trap catches. Print a hint so the
-  # user knows the foreground process they just attached to has audit duty.
-  log_success "Ready. Attach your editor, or open a shell with:"
-  log_info "  devcontainer exec --workspace-folder \"$repo\" -- bash"
-  log_info "Audit collector running (pid $(cat "$(audit_pid_file "$name")" 2>/dev/null || echo '?')). Ctrl-C to tear down."
+  log_success "Ready."
   if [[ "$learn_mode" -eq 1 ]] && egress_enabled "$profile_json"; then
     log_info "egress --learn-mode: use the container, then Ctrl-C to print the proposed allowlist diff."
   fi
 
-  # Hold the foreground until the user signals shutdown. Without this wait,
-  # the script would exit immediately, EXIT-trap-tearing-down the collector
-  # while the container is still up. devcontainer up returns once the
-  # container is healthy; we then wait on the collector pid. SIGINT fires the
-  # combined trap above (audit teardown + optional --learn-mode diff).
-  _cmd_open_wait_for_shutdown "$name"
+  # v0.9.0 (ARD-0030): foreground dev command UX. If the profile sets `dev:`
+  # AND --no-dev wasn't passed, run dev.command in the container with this
+  # terminal attached — user sees app logs, auth prompts, and errors directly.
+  # Otherwise drop into an interactive bash shell (back-compat with the
+  # pre-v0.9.0 behavior). Either path blocks the foreground; on exit the EXIT
+  # trap tears down the audit collector + UI stack.
+  _cmd_open_maybe_run_dev_or_shell "$profile_json" "$repo" "$name" "$no_dev"
 }
 
 # _cmd_open_start_audit_collector <profile-json>
@@ -231,7 +246,7 @@ _cmd_open_start_audit_collector() {
 }
 
 # _cmd_open_stop_audit_collector <profile-name>
-# Invoked from the SIGINT/SIGTERM trap and from the foreground waiter. Tears
+# Invoked from _cmd_open_teardown_all (which the EXIT trap calls). Tears
 # down the collector + FIFO. Idempotent.
 _cmd_open_stop_audit_collector() {
   local profile="${1:-}"
@@ -240,21 +255,20 @@ _cmd_open_stop_audit_collector() {
   audit_collector_stop "$profile" || true
 }
 
-# _cmd_open_wait_for_shutdown <profile-name>
-# Blocks the foreground on the collector PID. The trap on INT/TERM does the
-# teardown; this wait just keeps the script alive so the trap can fire.
-_cmd_open_wait_for_shutdown() {
-  local profile="$1"
-  local pid pidfile
-  pidfile="$(audit_pid_file "$profile")"
-  pid="$(cat "$pidfile" 2>/dev/null || echo '')"
-  [[ -z "$pid" ]] && return 0
-  # `wait` only works on direct children; fall back to a polling loop because
-  # the collector was spawned via subshell `&` and may not be in the same
-  # job table as our current shell on every bash version.
-  while kill -0 "$pid" 2>/dev/null; do
-    sleep 1
-  done
+# _cmd_open_teardown_all <profile-name> <ui-started-flag>
+# Single source of teardown for cmd_open. Runs from the EXIT trap (which
+# fires on every exit path — clean dev exit, dev failure + shell-drop exit,
+# Ctrl-C via the INT/TERM trap that just calls `exit 130`, and the "boring
+# itself crashed" path). Both inner calls are idempotent so a redundant
+# invocation is harmless. UI teardown is gated on the started flag so we
+# don't log spurious "stopping" messages for runs that never enabled --ui.
+_cmd_open_teardown_all() {
+  local profile="${1:-}"
+  local ui_started="${2:-0}"
+  _cmd_open_stop_audit_collector "$profile"
+  if [[ "$ui_started" == "1" && -n "$profile" ]]; then
+    web_ui_stop "$profile" 2>/dev/null || true
+  fi
 }
 
 # _cmd_open_resolve_secrets <profile-json>
@@ -396,6 +410,70 @@ _cmd_open_maybe_start_ui() {
   url="$(web_ui_url "$slug")"
   log_success "Web UI: $url"
   web_ui_open_browser "$url"
+
+  # v0.9.0: signal to the EXIT trap that the UI is up so teardown calls
+  # web_ui_stop. Set last so a failure above leaves the flag at 0.
+  BORING_OPEN_UI_STARTED=1
+}
+
+# _cmd_open_maybe_run_dev_or_shell <profile-json> <repo> <profile-name> <no-dev>
+# ARD-0030 (v0.9.0): hold the foreground on either the profile's dev.command
+# (the long-running app server) or — when dev.command is absent or --no-dev
+# was passed — an interactive bash shell in the container.
+#
+# Dev-command behavior:
+#   - Print [INFO] Starting dev: <cmd> + Ctrl-C hint.
+#   - Run `devcontainer exec ... -- bash -c "cd <workdir> && exec <cmd>"`.
+#   - On exit code 0 or 130 (SIGINT): return cleanly; EXIT trap tears down.
+#   - On any other nonzero exit code: print an actionable hint and drop into
+#     bash so the user can debug without losing the container. The EXIT trap
+#     fires when bash exits.
+#
+# Back-compat: when no dev.command is set, this is just the bash drop — the
+# pre-v0.9.0 cmd_open behavior unchanged.
+_cmd_open_maybe_run_dev_or_shell() {
+  local profile_json="$1" repo="$2" profile_name="$3" no_dev="$4"
+
+  local dev_cmd dev_workdir
+  dev_cmd="$(jq -r '.dev.command // ""' <<<"$profile_json")"
+  dev_workdir="$(jq -r '.dev.workdir // "/workspace"' <<<"$profile_json")"
+
+  # No dev command, or user opted out: drop into bash. Preserves the
+  # pre-v0.9.0 cmd_open foreground UX.
+  if [[ -z "$dev_cmd" || "$no_dev" -eq 1 ]]; then
+    if [[ "$no_dev" -eq 1 && -n "$dev_cmd" ]]; then
+      log_info "--no-dev: skipping dev.command ($dev_cmd); dropping into bash shell"
+    fi
+    log_info "Dropping into interactive shell. Exit (or Ctrl-D) to tear down."
+    devcontainer_exec --workspace-folder "$repo" -- bash || true
+    return 0
+  fi
+
+  log_info "Starting dev: $dev_cmd"
+  log_info "Ctrl-C to stop everything"
+
+  # The double-quoted shell-c string lets us cd into the configured workdir
+  # before exec'ing the command (so app code that resolves files relative to
+  # cwd works). `exec` replaces the bash process with the dev server so
+  # signals reach it directly (no orphaned shell wrapper to intercept SIGINT).
+  local dev_exit=0
+  devcontainer_exec --workspace-folder "$repo" \
+    -- bash -c "cd $dev_workdir && exec $dev_cmd" || dev_exit=$?
+
+  case "$dev_exit" in
+    0|130)
+      # Clean exit (process completed) or Ctrl-C. Teardown via EXIT trap.
+      return 0
+      ;;
+    *)
+      log_warn "dev command exited with code $dev_exit. Container is still up."
+      log_info "  To debug interactively:   boring open --no-dev $repo"
+      log_info "  To stop everything:       boring ui stop $profile_name && (cd \"$repo/.devcontainer\" && docker compose down)"
+      log_info "Dropping into bash shell so you can inspect/restart in place."
+      devcontainer_exec --workspace-folder "$repo" -- bash || true
+      return 0
+      ;;
+  esac
 }
 
 # _cmd_open_run_restores <profile-json> <profile-name>
@@ -1093,7 +1171,7 @@ cmd_help() {
 boring $VERSION — dev container launcher for wrapped apps
 
 USAGE
-  boring open [--learn-mode] [--ui|--no-ui] <path>
+  boring open [--learn-mode] [--ui|--no-ui] [--no-dev] <path>
                                              Open a boring-enabled repo
   boring run "<prompt>" --profile <name>     Headless one-shot Claude (ARD-0013)
   boring restore [<path>] [--refresh]        Run/re-run restore: entries (ARD-0012)
@@ -1119,6 +1197,9 @@ FLAGS
                  browser. Profile may default this via ui.enabled: true.
   --no-ui        v0.8.0: force-disable UI bring-up even if the profile
                  sets ui.enabled: true. Useful for CI / SSH sessions.
+  --no-dev       v0.9.0 (ARD-0030): skip dev.command even if profile sets
+                 it; drop into bash shell instead. Use when debugging the
+                 container or the dev process itself.
 
 A boring-enabled repo contains a .boring/profile.yaml describing the dev
 environment. boring composes existing tools (dbx, devcontainer CLI, docker)

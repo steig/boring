@@ -4,7 +4,41 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.8.1` — two v0.8.0 ship-blockers fixed. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) still ahead.
+VERSION is `0.9.0` — `dev:` profile field + foreground dev-command UX (ARD-0030). v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) still ahead.
+
+## [0.9.0] — 2026-05-26
+
+### Added
+
+- **Profile `dev:` block (`lib/profile.sh`).** New optional top-level map; closes the "boring readies the box but no app server, no auth prompt" gap that surfaced when shop-theme was opened in the web UI tonight. Schema:
+  - `dev.command` (string OR list-of-strings; required when block present; list entries are joined with spaces — users with quoting nuances should use the string form)
+  - `dev.workdir` (container-side absolute path; default `/workspace`)
+  - `dev.port` (integer 1..65535; informational only — `forward_ports:` is the real port-forward config)
+  Validated + surfaced in the normalized JSON output of `profile_load`.
+- **`boring open` foreground dev-command UX (ARD-0030).** After the container is up + setup is complete + (when `--ui`) the boring-ui stack is started, boring runs the profile's `dev.command` in the FOREGROUND via `devcontainer exec ... -- bash -c "cd <dev.workdir> && exec <dev.command>"`. The user's terminal is now the dev server's terminal — they see output, auth prompts, and errors directly.
+  - On clean exit (code 0) or Ctrl-C (code 130): teardown via the EXIT trap.
+  - On nonzero exit: print an actionable hint (suggests `boring open --no-dev <path>` for in-place debug) then drop into an interactive bash shell so the user can fix the issue without losing the container.
+  - When `dev:` is not set or `--no-dev` was passed: drop into the existing interactive bash shell (back-compat with pre-v0.9.0 `boring open`).
+- **`--no-dev` flag on `boring open`.** Skip `dev.command` even if the profile sets it; drop into bash shell instead. Documented in `boring help` + the top-of-file usage block. Use when debugging the container or the dev process itself.
+
+### Changed
+
+- **Trap chain hardened (`boring`).** Teardown logic for `cmd_open` (audit collector stop + UI stack stop) is now centralized in a single EXIT trap (`_cmd_open_teardown_all`). INT/TERM traps just `exit 130`; EXIT does the work — `devcontainer exec` frequently eats SIGINT, so the EXIT path is the only reliable safety net. UI teardown is gated on a new `BORING_OPEN_UI_STARTED` flag set by `_cmd_open_maybe_start_ui` on success, so the EXIT trap is a no-op for runs that never enabled `--ui`. Idempotent inner calls mean a redundant INT-then-EXIT cascade is harmless.
+
+### Known limitations (transparency)
+
+- **Foreground design is engineer-in-terminal-shaped.** It does NOT compose with the future ARD-0021 §9 marketer-via-launchd flow (the proxy autostart wants `dev:` running in the background, separately managed) — revisit for v1.x. Marketers should keep using `boring open --ui` for now without `dev:` declared, or wrap the UI launch separately.
+- **Single dev command only.** Multi-process projects (concurrent backend + frontend + watcher) should compose them with a wrapper like `concurrently` or `npm-run-all` in the `dev.command` string. A future `dev: { services: [...] }` multi-process shape can come later if users ask.
+- **First-run OAuth is still manual copy-paste.** When the dev command needs an OAuth token on first run (Shopify, etc.), the user copies/pastes the URL from the foreground output. Same UX as running the command outside boring.
+- **Readiness polling deferred to v0.9.1.** There's no automatic "wait for dev server to bind port X" — the user knows it's up when log lines start flowing. A future minor will add `dev.ready:` (port poll or HTTP probe) so `--ui` can wait before opening the browser.
+
+### Files touched
+
+- `boring` — `--no-dev` parse, new `_cmd_open_teardown_all` + `_cmd_open_maybe_run_dev_or_shell` helpers, trap chain centralization, `BORING_OPEN_UI_STARTED` flag, help/usage updates, VERSION → 0.9.0.
+- `lib/profile.sh` — `dev:` schema validation (`dev.command` required + string-or-list shape; `dev.workdir` absolute-path; `dev.port` int range) + normalization (`.dev.command` is always a string downstream; `.dev.workdir` defaults to `/workspace`; `.dev` is null when block absent).
+- `tests/fixtures/profile-with-dev-block.yaml` (new) — exercises every field.
+- `tests/smoke-dev-foreground.sh` (new) — 27 assertions across 10 test groups: schema (string/list/defaults/all 4 rejection paths/back-compat), `--no-dev` flag surfacing, runner argv via PATH-shimmed `devcontainer` stub, `--no-dev` short-circuit, failure-hint + bash-drop fallback. No live `devcontainer` / `docker` / `claude` invocation.
+- `CHANGELOG.md` — this entry.
 
 ## [0.8.1] — 2026-05-26
 

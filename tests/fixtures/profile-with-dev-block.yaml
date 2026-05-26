@@ -1,0 +1,14 @@
+# Fixture for the v0.9.0 (ARD-0030) `dev:` profile block.
+# Consumed by tests/smoke-dev-foreground.sh.
+profile_version: "1"
+name: dev-block-fixture
+preset: shopify
+services: []
+
+# v0.9.0: long-running dev command. dev.command is required when the dev:
+# block is present; dev.workdir defaults to /workspace; dev.port is
+# informational only (forward_ports is the real port-forward config).
+dev:
+  command: "pnpm dev"
+  workdir: "/workspace/site"
+  port: 9292

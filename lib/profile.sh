@@ -562,6 +562,75 @@ _profile_validate_json() {
     fi
   done
 
+  # v0.9.0 (ARD-0030): top-level `dev:` block — long-running dev command run in
+  # foreground by `boring open` after the container is up + setup is complete +
+  # (when --ui) the UI stack is started. Required field: dev.command (string OR
+  # list-of-strings; list is joined with spaces). Optional: dev.workdir
+  # (container-side path, must start with /; default /workspace) and dev.port
+  # (informational only; forward_ports is the real port config).
+  local dev_type
+  dev_type="$(jq -r '.dev // null | if . == null then "null" else type end' <<<"$json")"
+  if [[ "$dev_type" != "null" && "$dev_type" != "object" ]]; then
+    log_error "$source: 'dev' must be a map (got: $dev_type)"; _bump
+  elif [[ "$dev_type" == "object" ]]; then
+    local dev_cmd_type dev_workdir dev_workdir_type dev_port_raw
+    dev_cmd_type="$(jq -r '.dev | if has("command") then (.command | type) else "absent" end' <<<"$json")"
+    case "$dev_cmd_type" in
+      string)
+        # Empty string is not a valid command.
+        local dev_cmd_str
+        dev_cmd_str="$(jq -r '.dev.command' <<<"$json")"
+        [[ -z "$dev_cmd_str" ]] && { log_error "$source: dev.command must be a non-empty string"; _bump; }
+        ;;
+      array)
+        # Must be non-empty and every entry must be a non-empty string.
+        local dev_cmd_len
+        dev_cmd_len="$(jq -r '.dev.command | length' <<<"$json")"
+        if [[ "$dev_cmd_len" -eq 0 ]]; then
+          log_error "$source: dev.command list must contain at least one entry"; _bump
+        else
+          bad="$(jq -r '.dev.command | map(select(type != "string" or . == "")) | .[]' <<<"$json")"
+          if [[ -n "$bad" ]]; then
+            while IFS= read -r v; do
+              log_error "$source: dev.command list entries must be non-empty strings (got: $v)"; _bump
+            done <<<"$bad"
+          fi
+        fi
+        ;;
+      absent)
+        log_error "$source: dev.command is required when 'dev:' block is present"; _bump
+        ;;
+      *)
+        log_error "$source: dev.command must be a string or list of strings (got: $dev_cmd_type)"; _bump
+        ;;
+    esac
+    dev_workdir_type="$(jq -r '.dev | if has("workdir") then (.workdir | type) else "absent" end' <<<"$json")"
+    if [[ "$dev_workdir_type" != "absent" ]]; then
+      if [[ "$dev_workdir_type" != "string" ]]; then
+        log_error "$source: dev.workdir must be a string (got: $dev_workdir_type)"; _bump
+      else
+        dev_workdir="$(jq -r '.dev.workdir' <<<"$json")"
+        if [[ -z "$dev_workdir" || "${dev_workdir:0:1}" != "/" ]]; then
+          log_error "$source: dev.workdir must be an absolute container-side path starting with / (got: $dev_workdir)"; _bump
+        fi
+      fi
+    fi
+    # dev.port: integer 1..65535 if present. Informational only; forward_ports
+    # is the canonical port-forward config — we do not auto-add this to it.
+    local dev_port_type
+    dev_port_type="$(jq -r '.dev | if has("port") then (.port | type) else "absent" end' <<<"$json")"
+    if [[ "$dev_port_type" != "absent" ]]; then
+      if [[ "$dev_port_type" != "number" ]]; then
+        log_error "$source: dev.port must be an integer (got: $dev_port_type)"; _bump
+      else
+        dev_port_raw="$(jq -r '.dev.port' <<<"$json")"
+        if ! [[ "$dev_port_raw" =~ ^[0-9]+$ ]] || [[ "$dev_port_raw" -lt 1 || "$dev_port_raw" -gt 65535 ]]; then
+          log_error "$source: dev.port must be an integer between 1 and 65535 (got: $dev_port_raw)"; _bump
+        fi
+      fi
+    fi
+  fi
+
   # v0.8.0 (boring open --ui): top-level `ui:` block, all optional.
   #   ui.enabled (bool, default false) — opt-in trigger for `boring open` to
   #     bring up the boring-ui web stack after the container is up.
@@ -816,6 +885,25 @@ _profile_normalize() {
           enabled: ($p.ui.enabled // false),
           preview_url: ($p.ui.preview_url // null)
         },
+        # v0.9.0 (ARD-0030): dev block normalized into {command, workdir, port}.
+        # command is always a string downstream (a list is joined with spaces).
+        # When the user has not declared a dev: block at all, .dev is null so
+        # cmd_open can cheaply skip ("no foreground dev command, drop into
+        # bash"). When declared, .dev.command is guaranteed non-empty by the
+        # validator above; .dev.workdir defaults to /workspace; .dev.port stays
+        # null when absent.
+        dev: (if ($p.dev // null) == null then null else
+          {
+            command: (
+              if ($p.dev.command | type) == "array"
+                then ($p.dev.command | join(" "))
+                else $p.dev.command
+              end
+            ),
+            workdir: ($p.dev.workdir // "/workspace"),
+            port:    ($p.dev.port    // null)
+          }
+        end),
         claude: { mcp: ($p.claude.mcp // []) }
       }
       | apply_preset($preset)
