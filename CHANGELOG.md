@@ -4,7 +4,41 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.9.1` — preset preview-URL defaults switched to `127.0.0.1` to avoid IPv6/IPv4 loopback mismatch. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) still ahead.
+VERSION is `0.10.0` — boring-ui-backend now reverse-proxies the preview iframe via `/preview/*`, stripping `X-Frame-Options` and CSP `frame-ancestors` so production-shaped upstreams (Shopify, GitHub-style dev URLs, any clickjacking-defended site) render. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) still ahead.
+
+## [0.10.0] — 2026-05-26
+
+### Added
+
+- **`/preview/*` reverse-proxy route on boring-ui-backend (ARD-0031).** The chat UI's right-pane iframe now loads via `/preview/` on the same origin as the chat page instead of the absolute upstream URL. The backend forwards requests to the configured `--preview-url`, surgically strips iframe-blocking response headers, and preserves WebSocket upgrade so HMR keeps working.
+  - `X-Frame-Options` header: deleted entirely on every proxied response.
+  - `Content-Security-Policy` header: the `frame-ancestors` directive is scrubbed (case-insensitive, whole-directive-name match) while every other directive (`script-src`, `style-src`, `default-src`, etc.) is preserved. If `frame-ancestors` was the only directive, the whole CSP header is deleted.
+  - WebSocket upgrade: passes through `Upgrade: websocket` + `Connection: upgrade` handshake bidirectionally — Vite, Next, Rails (Hotwire), Shopify theme-kit HMR all keep working.
+  - Cross-origin headers (`Cross-Origin-Resource-Policy`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Embedder-Policy`) are **NOT** stripped — these govern different cross-origin contexts and don't usually block iframes. Revisit if field evidence shows otherwise.
+  - Same-origin iframe additionally dodges `SameSite=Strict` cookie scoping and 2026's credentialed-fetch tightening — chat + preview share one origin, one cookie jar.
+- **Closes a v0.9.x ship-blocker:** iframing Shopify (`X-Frame-Options: DENY`) and other production-shaped upstreams was structurally broken — iframe rendered blank regardless of cross-origin / cookie config. Same-origin proxy + header strip makes it work.
+
+### Changed
+
+- **Iframe `src` is now relative `/preview/` instead of the absolute preview URL.** The header strip's URL display and "open in new tab" link still surface the absolute URL so the user knows what's being proxied; only the iframe itself uses the same-origin path.
+- **`boring-ui-backend --preview-url` flag doc updated** to note the new `/preview/` reverse-proxy behavior per ARD-0031.
+
+### Files touched
+
+- `tools/boring-ui-backend/preview.go` (new) — `handlePreview` + `stripFrameBlockingHeaders` + `removeFrameAncestorsDirective`. Stdlib-only (`net/http`, `net/http/httputil`, `net/url`, `strings`). Heavily commented with a local-dev-only safety boundary warning at the file top.
+- `tools/boring-ui-backend/preview_test.go` (new) — 17 tests across the unit helpers, route registration, end-to-end proxy behavior, path-prefix stripping, host-header rewriting, 404/502 error paths, and stdlib-only WebSocket Upgrade handshake. Uses `net/http/httptest` to mock every upstream — no live Shopify / claude / docker invocation.
+- `tools/boring-ui-backend/server.go` — mount `/preview` + `/preview/` routes before the `/` catch-all; iframe `src` in `renderIndex` switched from absolute URL to relative `/preview/`.
+- `tools/boring-ui-backend/server_test.go` — `TestIndexPreviewIframeWhenURLSet` updated to assert the new relative-src behavior + guard against the old absolute-src regressing.
+- `tools/boring-ui-backend/main.go` — `--preview-url` flag doc updated.
+- `boring` — VERSION → 0.10.0.
+- `CHANGELOG.md` — this entry.
+
+### Known limitations (transparency)
+
+- **Hardcoded absolute URLs in upstream response bodies aren't rewritten.** If an upstream's HTML/JS/CSS contains absolute `http://127.0.0.1:9292/assets/foo.js` references (rather than relative `/assets/foo.js`), those fetches bypass the proxy. Most modern frameworks emit relative paths, so this affects only a minority of upstreams; documented in ARD-0031 §5. Override `preview_url:` to a path the upstream cooperates with if it bites you.
+- **Stripping security headers is contextually safe only because the user is iframing their own local dev server.** Comment at the top of `preview.go` flags this loudly — anyone copying `stripFrameBlockingHeaders` into a general-purpose proxy needs to re-read ARD-0031 §Rationale first.
+- **No per-project knob to disable header stripping.** ARD-0031 §Rationale notes "a future config option could let a profile DISABLE header stripping (trust the upstream's framing rules)" — deferred until real demand emerges.
+- **Backend uptime is now on the critical path for the preview.** Backend dies → preview dies. Today: backend dies → chat thread also dies, so the marginal cost is small.
 
 ## [0.9.1] — 2026-05-26
 

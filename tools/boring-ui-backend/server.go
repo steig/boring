@@ -88,6 +88,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/save/preview", s.handleSavePreview)
 	mux.HandleFunc("/api/undo", s.handleUndo)
 
+	// /preview/* reverse-proxies to PreviewURL with X-Frame-Options + CSP
+	// frame-ancestors stripped (ARD-0031). Registered with a trailing slash
+	// so the stdlib mux treats it as a subtree pattern matching /preview,
+	// /preview/, and /preview/anything/below. Mount BEFORE the "/" catch-all
+	// so the catch-all doesn't shadow it. Implementation in preview.go.
+	mux.HandleFunc("/preview/", s.handlePreview)
+	mux.HandleFunc("/preview", s.handlePreview)
+
 	// Static assets.
 	mux.HandleFunc("/chat.css", s.handleAsset("assets/chat.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("/chat.js", s.handleAsset("assets/chat.js", "application/javascript; charset=utf-8"))
@@ -163,6 +171,14 @@ func renderIndex(html, previewURL, terminalURL string) string {
 		// Header strip with refresh button, open-in-new-tab link, and a
 		// muted URL display. Rendered only when a URL is configured —
 		// when not, we show the fallback message and skip the strip.
+		//
+		// The URL DISPLAY + open-in-new-tab link still use the absolute
+		// URL (so the user knows what they're previewing and can pop it
+		// open in a clean tab). The IFRAME src, however, is the relative
+		// /preview/ path — same-origin with the chat UI, so the browser
+		// doesn't apply the upstream's X-Frame-Options / CSP
+		// frame-ancestors headers (which the proxy strips anyway). Per
+		// ARD-0031 §1.
 		pane = `<div class="preview-header">` +
 			`<span class="preview-url" title="` + safe + `">` + safeDisplay + `</span>` +
 			`<div class="preview-actions">` +
@@ -170,7 +186,7 @@ func renderIndex(html, previewURL, terminalURL string) string {
 			`<a class="preview-btn" id="preview-open" href="` + safe + `" target="_blank" rel="noopener noreferrer" title="Open in new tab">↗</a>` +
 			`</div>` +
 			`</div>` +
-			`<iframe id="preview-iframe" src="` + safe + `" title="preview"></iframe>`
+			`<iframe id="preview-iframe" src="/preview/" title="preview"></iframe>`
 	} else {
 		pane = `<div id="preview-fallback" class="preview-fallback">` +
 			`<p>No preview configured for this project.</p>` +

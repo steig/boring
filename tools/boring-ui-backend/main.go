@@ -41,7 +41,7 @@ func main() {
 		threadsDir   = flag.String("threads-dir", DefaultThreadsDir, "directory for thread JSONL files")
 		provider     = flag.String("provider", "mock", "AI provider: mock | claude")
 		mock         = flag.Bool("mock", false, "deprecated alias for --provider=mock")
-		previewURL   = flag.String("preview-url", "", "absolute URL the right-pane preview iframe loads (per ARD-0022 §6); empty shows fallback message")
+		previewURL   = flag.String("preview-url", "", "absolute URL the right-pane preview iframe loads (per ARD-0022 §6); empty shows fallback message. The iframe loads via /preview/ on the backend, not directly — backend reverse-proxies and strips X-Frame-Options + CSP frame-ancestors per ARD-0031 so upstreams with iframe-hostile headers (Shopify, GitHub, most prod sites) render.")
 		terminalURL  = flag.String("terminal-url", "", "absolute URL the LEFT-pane terminal iframe loads (e.g. ttyd serving claude); empty renders the SSE chat UI instead")
 		allowedPaths = flag.String("allowed-paths", "", "comma-separated glob patterns relative to workdir; files modified by the AI outside these patterns are reverted via git after each turn. Empty disables enforcement.")
 	)

@@ -102,12 +102,22 @@ func TestIndexPreviewIframeWhenURLSet(t *testing.T) {
 	if bytes.Contains(body, []byte("{{PREVIEW_PANE}}")) {
 		t.Errorf("template marker not substituted: %s", string(body[:min(400, len(body))]))
 	}
-	want := `src="http://localhost:3000/"`
+	// Per ARD-0031: iframe src is the relative /preview/ path (same-origin),
+	// not the absolute URL. The header strip (asserted in
+	// TestIndexPreviewHeaderRendersWhenURLSet) still surfaces the absolute
+	// URL so the user knows what's being proxied.
+	want := `src="/preview/"`
 	if !bytes.Contains(body, []byte(want)) {
 		t.Errorf("expected iframe %s; got %s", want, string(body[:min(400, len(body))]))
 	}
 	if !bytes.Contains(body, []byte(`id="preview-iframe"`)) {
 		t.Errorf("expected iframe id=preview-iframe; got %s", string(body[:min(400, len(body))]))
+	}
+	// The absolute URL should NOT appear as the iframe src (would defeat
+	// the same-origin-via-proxy design).
+	if bytes.Contains(body, []byte(`src="http://localhost:3000/"`)) {
+		t.Errorf("iframe still has absolute src; expected relative /preview/. body: %s",
+			string(body[:min(400, len(body))]))
 	}
 	if bytes.Contains(body, []byte("No preview configured")) {
 		t.Errorf("fallback copy leaked through when URL was set")
