@@ -4,7 +4,13 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.10.0` — boring-ui-backend now reverse-proxies the preview iframe via `/preview/*`, stripping `X-Frame-Options` and CSP `frame-ancestors` so production-shaped upstreams (Shopify, GitHub-style dev URLs, any clickjacking-defended site) render. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) still ahead.
+VERSION is `0.10.1` — chat.js TypeError fix when --terminal-url mode is active. No CLI / API / schema changes.
+
+## [0.10.1] — 2026-05-26
+
+### Fixed
+
+- **`chat.js` no longer throws `TypeError: Cannot read properties of null (reading 'addEventListener')` in terminal-pane mode.** When `--terminal-url` is set, `renderIndex` substitutes `{{LEFT_PANE}}` with an iframe only — there's no `#thread`, `#composer`, or `#input` in the DOM. v0.10.0 (and earlier `--terminal-url`-using versions back to v0.8.0) unconditionally called `composer.addEventListener(...)` at script init, throwing immediately and blocking subsequent JS initialization (including the preview-refresh handler attached later in the same file). Fix: detect chat-pane presence once at script init (`hasChatPane`), guard chat-only bindings + render branches, keep SSE attachment + save dialog handlers in BOTH modes so save events still drive toast feedback when the user clicks Save in the terminal-mode UI. Save card rendering (`renderSaveCard`) is gated since it writes to `#thread`; toast still fires for save_succeeded / save_failed.
 
 ## [0.10.0] — 2026-05-26
 

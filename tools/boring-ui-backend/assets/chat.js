@@ -10,6 +10,13 @@
   const thread = $("thread");
   const composer = $("composer");
   const input = $("input");
+  // When --terminal-url is set, renderIndex (server.go) substitutes the
+  // LEFT_PANE template with an iframe ONLY — there's no #thread, #composer,
+  // or #input. The chat-pane-specific bindings below short-circuit on this
+  // flag so they don't throw `Cannot read properties of null`. Save dialog,
+  // toast, and preview-header bindings stay attached because they live
+  // OUTSIDE LEFT_PANE in the HTML and make sense in both modes.
+  const hasChatPane = !!thread && !!composer && !!input;
   const saveBtn = $("save-btn");
   const saveDialog = $("save-dialog");
   const saveForm = $("save-form");
@@ -42,6 +49,7 @@
   }
 
   function scrollToBottom() {
+    if (!thread) return;
     thread.scrollTop = thread.scrollHeight;
   }
 
@@ -387,6 +395,15 @@
   }
 
   function dispatchEnvelope(type, data) {
+    // Chat-pane-only event types: render functions append to #thread which
+    // doesn't exist in terminal mode. Skip them cleanly so save events
+    // (which still need to fire for toast feedback) keep working.
+    const chatOnlyTypes = [
+      "user_message", "ai_thinking", "ai_text",
+      "tool_call", "tool_result", "turn_complete", "policy_blocked",
+    ];
+    if (!hasChatPane && chatOnlyTypes.indexOf(type) !== -1) return;
+
     switch (type) {
       case "user_message":
         renderUserMessage(data);
@@ -416,16 +433,16 @@
         renderSessionCost();
         break;
       case "save_started":
-        renderSaveCard("started", data);
+        if (hasChatPane) renderSaveCard("started", data);
         setComposerBusy(true);
         break;
       case "save_succeeded":
-        renderSaveCard("succeeded", data);
+        if (hasChatPane) renderSaveCard("succeeded", data);
         setComposerBusy(false);
         showToast("Saved.", false);
         break;
       case "save_failed":
-        renderSaveCard("failed", data);
+        if (hasChatPane) renderSaveCard("failed", data);
         setComposerBusy(false);
         showToast("Save failed: " + (data.error || "unknown"), true);
         break;
@@ -442,8 +459,12 @@
   }
 
   function setComposerBusy(busy) {
+    if (!hasChatPane) {
+      if (saveBtn) saveBtn.disabled = busy;
+      return;
+    }
     input.disabled = busy;
-    saveBtn.disabled = busy;
+    if (saveBtn) saveBtn.disabled = busy;
     composer.querySelector("button[type=submit]").disabled = busy;
   }
 
@@ -493,23 +514,27 @@
     };
   }
 
-  composer.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const text = input.value.trim();
-    if (!text) return;
-    input.value = "";
-    composer.classList.add("busy");
-    try {
-      const r = await fetch("api/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (!r.ok) showToast("Send failed: " + r.status, true);
-    } catch (err) {
-      showToast("Send failed: " + err, true);
-    }
-  });
+  // Chat-pane-only: composer submit handler. Skipped in terminal-mode
+  // (the terminal iframe owns input there).
+  if (hasChatPane) {
+    composer.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      composer.classList.add("busy");
+      try {
+        const r = await fetch("api/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (!r.ok) showToast("Send failed: " + r.status, true);
+      } catch (err) {
+        showToast("Send failed: " + err, true);
+      }
+    });
+  }
 
   // --- Save dialog -------------------------------------------------------
 
@@ -589,8 +614,15 @@
 
   // --- Boot --------------------------------------------------------------
 
+  // Boot:
+  //   - hydrate() loads /api/thread events into the chat — chat-pane only.
+  //   - attachSSE() runs in BOTH modes so save-flow events (save_started /
+  //     save_succeeded / save_failed) can still drive toasts in terminal
+  //     mode when the user clicks Save in the header. dispatchEnvelope's
+  //     chat-pane render branches no-op cleanly when thread/composer
+  //     don't exist (scrollToBottom + setComposerBusy are guarded).
   (async () => {
-    await hydrate();
+    if (hasChatPane) await hydrate();
     attachSSE();
   })();
 })();
