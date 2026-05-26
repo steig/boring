@@ -562,6 +562,34 @@ _profile_validate_json() {
     fi
   done
 
+  # v0.8.0 (boring open --ui): top-level `ui:` block, all optional.
+  #   ui.enabled (bool, default false) — opt-in trigger for `boring open` to
+  #     bring up the boring-ui web stack after the container is up.
+  #   ui.preview_url (string) — absolute URL the right-pane iframe loads.
+  #     Wins over top-level preview_url when both set (UI is the only consumer).
+  local ui_type
+  ui_type="$(jq -r '.ui // null | if . == null then "null" else type end' <<<"$json")"
+  if [[ "$ui_type" != "null" && "$ui_type" != "object" ]]; then
+    log_error "$source: 'ui' must be a map (got: $ui_type)"; _bump
+  elif [[ "$ui_type" == "object" ]]; then
+    local ui_enabled_type ui_preview_type ui_preview
+    ui_enabled_type="$(jq -r '.ui | if has("enabled") then (.enabled | type) else "absent" end' <<<"$json")"
+    if [[ "$ui_enabled_type" != "absent" && "$ui_enabled_type" != "boolean" ]]; then
+      log_error "$source: ui.enabled must be a boolean (got: $ui_enabled_type)"; _bump
+    fi
+    ui_preview_type="$(jq -r '.ui | if has("preview_url") then (.preview_url | type) else "absent" end' <<<"$json")"
+    if [[ "$ui_preview_type" != "absent" ]]; then
+      if [[ "$ui_preview_type" != "string" ]]; then
+        log_error "$source: ui.preview_url must be a string URL (got: $ui_preview_type)"; _bump
+      else
+        ui_preview="$(jq -r '.ui.preview_url' <<<"$json")"
+        # Permissive URL shape — same posture as the top-level preview_url check
+        # (non-empty string is enough; we don't gold-plate URL validation).
+        [[ -z "$ui_preview" ]] && { log_error "$source: ui.preview_url must be non-empty"; _bump; }
+      fi
+    fi
+  fi
+
   # ARD-0026: guardrails.allowed_tools: must be a list of canonical-name strings.
   # The deprecated guardrails.allowed_claude_tools: alias is rewritten to
   # allowed_tools: in _profile_rewrite_guardrails_deprecated; by validate time
@@ -780,6 +808,13 @@ _profile_normalize() {
         wip_branch_grace: ($p.wip_branch_grace // "24h"),
         audit: {
           prompts: ($p.audit.prompts // "per_user")
+        },
+        # v0.8.0: ui block normalized with defaults. ui.preview_url wins over
+        # top-level preview_url for the UI iframe (consumer chooses; we just
+        # surface both shapes so cmd_open can pick).
+        ui: {
+          enabled: ($p.ui.enabled // false),
+          preview_url: ($p.ui.preview_url // null)
         },
         claude: { mcp: ($p.claude.mcp // []) }
       }

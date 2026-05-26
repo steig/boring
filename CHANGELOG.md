@@ -4,7 +4,25 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.7.4` — adds the `boring upgrade` subcommand that's been missing since the curl installer landed. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) and boring-ui (ARDs 0019-0022, 0029) still ahead.
+VERSION is `0.8.0` — `boring open --ui` lands. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) still ahead.
+
+## [0.8.0] — 2026-05-26
+
+### Added
+
+- **`boring open --ui` + `--no-ui` flags.** Single-command path to bring the dev container up AND wire the boring-ui web stack (singleton host proxy on `:8090`, per-project ttyd serving `docker exec -it <c> claude` with the ARD-0029 guardrail flags, per-project boring-ui-backend on a Unix socket, registry upsert) in one shot. After the container is up + `setup-complete` is marked, boring builds the Go binaries (one-time, ~10s each), spawns the proxy if it's not running, brings up ttyd + backend for the slug, registers the project, prints `[OK] Web UI: http://127.0.0.1:8090/<slug>/`, and opens the browser. Falls through to the existing shell-drop / Ctrl-C-tears-down loop unchanged — engineer gets BOTH the shell AND the browser. `--no-ui` force-disables even if the profile opted in (useful for CI / SSH; SSH sessions also auto-skip the browser open).
+- **Profile `ui:` block (`lib/profile.sh`).** New optional top-level map: `ui.enabled` (bool, default false; the opt-in trigger when neither `--ui` nor `--no-ui` is passed) and `ui.preview_url` (string; absolute URL the right-pane iframe loads, wins over the top-level `preview_url` for UI consumers). Validated + surfaced in the normalized JSON output of `profile_load`.
+- **`lib/web_ui.sh`** — new module (~390 LOC, bash 3.2-compat). Public functions: `web_ui_required_binaries_present`, `web_ui_build_binaries`, `web_ui_socket_path`, `web_ui_ttyd_port`, `web_ui_proxy_pid_file`, `web_ui_proxy_port`, `web_ui_proxy_running`, `web_ui_proxy_start`, `web_ui_registry_upsert`, `web_ui_registry_remove`, `web_ui_ttyd_start`, `web_ui_backend_start`, `web_ui_stop`, `web_ui_url`, `web_ui_open_browser`, `web_ui_ensure_container_claude`, `web_ui_status`. Deterministic per-slug ttyd port via `printf '%s' "$slug" | cksum` (7681..8679 range; same slug always lands on the same port so reruns reconnect cleanly). Socket path under `$XDG_RUNTIME_DIR/boring/` (Linux) or `$TMPDIR/boring/` (macOS); matches boring-proxy `socketAllowedPrefixes`.
+- **`boring ui {status|stop|open} [<slug>]` subcommand.** `status` prints proxy state + per-slug ttyd/backend liveness; `stop <slug>` SIGTERMs the per-project ttyd + backend (proxy stays — other slugs may use it); `open <slug>` (re-)opens the browser to the slug's URL.
+- **Auto-build of `tools/boring-{proxy,ui-backend}/`** on first `--ui` use via `make build` in each tool dir. Requires `go` on PATH (with `ttyd`, `docker` — pre-flighted by `web_ui_required_binaries_present` with actionable install hints).
+- **`tests/smoke-web-ui.sh`** — 27 assertions across 7 sections: missing-binary detection (PATH=stub trick), socket-path determinism, ttyd-port determinism + range, URL shape, registry upsert preserves other entries + is idempotent + updates fields on re-upsert, registry remove preserves siblings + no-ops on missing slug, `web_ui_ttyd_start` produces the exact ARD-0029 §3 argv (verified via shell-function stub that records argv). No live `claude` / proxy / backend / ttyd spawn — every binary is mocked. Full smoke suite: 8/8 pass (was 7).
+
+### Known limitations (transparency)
+
+- **No automatic cleanup when the container stops.** Stopping the container (Ctrl-C `boring open`) leaves the per-slug ttyd + backend running because they're host-side processes. Use `boring ui stop <slug>` to tear them down explicitly. A future minor will wire this into the existing INT/TERM trap chain.
+- **In-container `claude` OAuth is still a one-time manual step.** First time you use `--ui` against a fresh container, you'll need to click through the OAuth flow in the ttyd terminal pane. Subsequent sessions use the cached credential.
+- **Proxy runs in `--insecure --no-auth` dev mode.** `boring open --ui` starts the proxy without TLS or token auth so the marketer flow works without the `boring proxy install` ceremony. TLS + per-user token + autostart (ARD-0021 §5-§8) still require `boring proxy install` explicitly; the dev-mode proxy is bound to `127.0.0.1:8090` only, so it's not exposed beyond loopback.
+- **Custom Dockerfile presets must install `claude` themselves.** For boring's bundled presets (shopify, django-node, python, node, node-postgres) claude is image-baked. For custom `stack.dockerfile:` profiles (e.g. immich), `web_ui_ensure_container_claude` will fail with an actionable hint: `docker exec -u root <container> npm install -g @anthropic-ai/claude-code`.
 
 ## [0.7.4] — 2026-05-26
 

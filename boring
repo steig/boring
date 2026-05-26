@@ -3,14 +3,15 @@
 # boring — dev container launcher for wrapped apps
 # https://github.com/steig/boring
 #
-VERSION="0.7.4"
+VERSION="0.8.0"
 #
 # Usage:
-#   boring open <git-url|.>                          Clone or attach a boring-enabled repo
+#   boring open [--ui|--no-ui] <git-url|.>           Clone or attach a boring-enabled repo
 #   boring run "<prompt>" --profile <name> [--repo <path>]
 #                                                    Headless one-shot Claude (ARD-0013)
 #   boring wip {start|commit|discard} <profile|.>    WIP-branch lifecycle (ARD-0022 §3)
 #   boring save <profile|.>                          Promote WIP branch to PR (ARD-0022 §7)
+#   boring ui {status|stop|open} [<slug>]            Manage boring-ui processes (v0.8.0)
 #   boring proxy <subcommand>                        Host-side reverse proxy (ARD-0021, v1.x)
 #   boring doctor                                    Diagnose environment
 #   boring version                                   Print version
@@ -42,6 +43,7 @@ source "$LIB_DIR/egress.sh"
 source "$LIB_DIR/doctor.sh"
 source "$LIB_DIR/audit.sh"
 source "$LIB_DIR/saver.sh"
+source "$LIB_DIR/web_ui.sh"
 
 # ============================================================================
 # Globals
@@ -73,9 +75,13 @@ cmd_open() {
   #                 proposed egress.allow diff for the user to paste.
   local target=""
   local learn_mode=0
+  # ui_flag: "" = unset (profile decides), "on" = --ui forced, "off" = --no-ui forced.
+  local ui_flag=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --learn-mode) learn_mode=1; shift ;;
+      --ui)         ui_flag="on"; shift ;;
+      --no-ui)      ui_flag="off"; shift ;;
       --) shift; break ;;
       -*) die "boring open: unknown flag $1" ;;
       *) [[ -z "$target" ]] && target="$1" || die "boring open: extra argument $1"; shift ;;
@@ -180,6 +186,12 @@ cmd_open() {
   _cmd_open_run_restores "$profile_json" "$name"
 
   _cmd_open_verify_setup "$profile_json" "$repo"
+
+  # v0.8.0 (boring open --ui): bring up the boring-ui web stack if requested.
+  # Precedence: --ui / --no-ui CLI flag wins; otherwise honor profile.ui.enabled
+  # (default false). Runs AFTER the container is fully up and AFTER setup-complete
+  # so claude inside the container has whatever the profile expected to be installed.
+  _cmd_open_maybe_start_ui "$profile_json" "$repo" "$name" "$ui_flag"
 
   # The collector keeps running across the container's lifetime; the user
   # signals shutdown with Ctrl-C, which the trap catches. Print a hint so the
@@ -309,6 +321,73 @@ _cmd_open_verify_setup() {
     || die "setup re-run failed; inspect the container with: devcontainer exec --workspace-folder \"$workspace\" -- bash"
 
   log_success "setup completed (after re-run)"
+}
+
+# _cmd_open_maybe_start_ui <profile-json> <repo> <profile-name> <ui-flag>
+# Decide whether to start the boring-ui web stack and, if so, bring it up.
+# Precedence: ui_flag wins ("on" or "off"); otherwise honor profile.ui.enabled
+# (default false). Per the v0.8.0 brief, this runs AFTER the existing
+# devcontainer-up + setup-complete path so any tooling the profile installed
+# (e.g., claude in a non-preset Dockerfile) is in place before the UI starts.
+_cmd_open_maybe_start_ui() {
+  local profile_json="$1" repo="$2" profile_name="$3" ui_flag="$4"
+
+  local enabled="false"
+  case "$ui_flag" in
+    on)  enabled="true" ;;
+    off) enabled="false" ;;
+    "")
+      enabled="$(jq -r '.ui.enabled // false' <<<"$profile_json")"
+      ;;
+    *) die "_cmd_open_maybe_start_ui: bad ui_flag value: $ui_flag" ;;
+  esac
+
+  [[ "$enabled" == "true" ]] || return 0
+
+  log_step "Bringing up boring-ui web stack (ARD-0019/0021/0022)"
+
+  # Pre-flight binaries; abort with install hints if anything's missing.
+  if ! web_ui_required_binaries_present; then
+    die "boring open --ui: missing required binaries (see warnings above)"
+  fi
+
+  # Build the Go binaries on first --ui use (one-time, ~10s each).
+  web_ui_build_binaries "$SCRIPT_DIR"
+
+  # The dev container name follows compose's <project>-<service>-<index>
+  # naming. compose_generate pins --project-name to $profile_name, so:
+  local container_name="${profile_name}-dev-1"
+
+  # Confirm claude is in the container + seed empty MCP config.
+  web_ui_ensure_container_claude "$container_name"
+
+  # Resolve preview URL: profile.ui.preview_url wins over top-level
+  # preview_url (boring-ui is the only consumer of ui.preview_url; the
+  # top-level field still exists for legacy/non-UI surfaces).
+  local preview_url
+  preview_url="$(jq -r '.ui.preview_url // .preview_url // ""' <<<"$profile_json")"
+
+  # Start the singleton proxy if it's not already running.
+  web_ui_proxy_start "$SCRIPT_DIR"
+
+  # Slug = profile name (already validated as [a-z0-9-]+ by profile_validate).
+  local slug="$profile_name"
+  local ttyd_port
+  ttyd_port="$(web_ui_ttyd_port "$slug")"
+
+  # Per-project ttyd + backend.
+  web_ui_ttyd_start "$slug" "$container_name" "$ttyd_port"
+  web_ui_backend_start "$SCRIPT_DIR" "$slug" "$repo" "$ttyd_port" "$preview_url" "$container_name"
+
+  # Register with the proxy so it can route /<slug>/.
+  local socket
+  socket="$(web_ui_socket_path "$slug")"
+  web_ui_registry_upsert "$slug" "$slug" "$repo" "$container_name" "$socket"
+
+  local url
+  url="$(web_ui_url "$slug")"
+  log_success "Web UI: $url"
+  web_ui_open_browser "$url"
 }
 
 # _cmd_open_run_restores <profile-json> <profile-name>
@@ -863,6 +942,54 @@ cmd_proxy() {
   exec "$proxy_bin" "$@"
 }
 
+# ============================================================================
+# cmd_ui — per-project teardown/status/browser-reopen for the boring-ui stack
+# v0.8.0. The proxy is a singleton across slugs and is NOT stopped by `stop`.
+# ============================================================================
+
+_cmd_ui_print_help() {
+  cat <<EOF
+boring ui — manage per-project boring-ui processes (v0.8.0)
+
+USAGE
+  boring ui status            Print proxy state + per-slug ttyd/backend liveness
+  boring ui stop <slug>       Stop ttyd + backend for one slug (proxy stays)
+  boring ui open <slug>       (Re-)open the browser to the slug's UI URL
+
+The singleton proxy is left running by 'stop' because other slugs may be
+using it. Use 'boring proxy uninstall' if you want to remove it entirely.
+EOF
+}
+
+cmd_ui() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    -h|--help|help|"") _cmd_ui_print_help; [[ -z "$sub" ]] && return 1 || return 0 ;;
+    status)
+      web_ui_status
+      ;;
+    stop)
+      local slug="${1:-}"
+      [[ -z "$slug" ]] && die "boring ui stop: missing <slug>"
+      web_ui_stop "$slug"
+      ;;
+    open)
+      local slug="${1:-}"
+      [[ -z "$slug" ]] && die "boring ui open: missing <slug>"
+      local url
+      url="$(web_ui_url "$slug")"
+      log_info "Opening $url"
+      web_ui_open_browser "$url"
+      ;;
+    *)
+      log_error "boring ui: unknown subcommand: $sub"
+      _cmd_ui_print_help >&2
+      exit 1
+      ;;
+  esac
+}
+
 cmd_version() {
   echo "boring $VERSION"
 }
@@ -958,7 +1085,8 @@ cmd_help() {
 boring $VERSION — dev container launcher for wrapped apps
 
 USAGE
-  boring open [--learn-mode] <path>          Open a boring-enabled repo
+  boring open [--learn-mode] [--ui|--no-ui] <path>
+                                             Open a boring-enabled repo
   boring run "<prompt>" --profile <name>     Headless one-shot Claude (ARD-0013)
   boring restore [<path>] [--refresh]        Run/re-run restore: entries (ARD-0012)
   boring audit security <profile>            Read profile-shared security events (ARD-0010)
@@ -968,6 +1096,7 @@ USAGE
                                              status, rotate-token
   boring wip {start|commit|discard} <path>   WIP-branch lifecycle (ARD-0022 §3)
   boring save <path> [--message --draft ...] Promote WIP branch to PR (ARD-0022 §7)
+  boring ui {status|stop|open} [<slug>]      Manage boring-ui processes (v0.8.0)
   boring doctor                              Diagnose environment
   boring upgrade [--tag <v>] [--force]       Pull the latest boring from GitHub
   boring version                             Print version
@@ -977,6 +1106,11 @@ FLAGS
   --learn-mode   Per ARD-0011, install iptables LOG-only egress rules and
                  propose an allowlist diff on Ctrl-C. No-op for profiles
                  without egress.allow.
+  --ui           v0.8.0: after the container is up, bring up the boring-ui
+                 web stack (ttyd+claude, proxy, chat backend) and open the
+                 browser. Profile may default this via ui.enabled: true.
+  --no-ui        v0.8.0: force-disable UI bring-up even if the profile
+                 sets ui.enabled: true. Useful for CI / SSH sessions.
 
 A boring-enabled repo contains a .boring/profile.yaml describing the dev
 environment. boring composes existing tools (dbx, devcontainer CLI, docker)
@@ -1003,6 +1137,7 @@ main() {
     proxy)              cmd_proxy   "$@" ;;
     wip)                cmd_wip     "$@" ;;
     save)               cmd_save    "$@" ;;
+    ui)                 cmd_ui      "$@" ;;
     doctor)             cmd_doctor  "$@" ;;
     upgrade)            cmd_upgrade "$@" ;;
     version|-v|--version) cmd_version ;;
