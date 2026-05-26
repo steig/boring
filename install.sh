@@ -5,12 +5,12 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/steig/boring/main/install.sh | bash
 #
-# Strategy (v0.6+):
+# Strategy (v0.7+):
 #   - Check for required dependencies (docker, devcontainer, dbx, jq, yq, git).
 #     If missing, print clear install instructions and exit. We do NOT
 #     auto-install runtimes — surprise installers tank trust (ARD-0001 Q9).
 #   - Clone (or update) the boring repo into $BORING_INSTALL_ROOT
-#     (default: $HOME/.local/share/boring).
+#     (default: $HOME/.local/opt/boring; see PATH RESOLUTION below).
 #   - Symlink the `boring` CLI into $HOME/.local/bin so it lands on a standard
 #     XDG-friendly PATH without needing sudo. The boring script resolves
 #     BASH_SOURCE through symlinks, so its lib/ and templates/ continue to
@@ -20,12 +20,43 @@
 # templates/ trees, scripts/, and a growing lib/ — a hand-maintained list of
 # files would drift the next time someone adds one and silently install a
 # broken boring. A clone is one operation and covers every tracked file.
+#
+# PATH RESOLUTION (v0.7+, bugfix):
+#   The default install root moved from $HOME/.local/share/boring to
+#   $HOME/.local/opt/boring because the SHARE directory is also boring's
+#   own BORING_DATA_DIR (registry.json, audit FIFOs, proxy state, etc. per
+#   ARD-0001). Putting a git checkout there collided with the runtime
+#   data the same path holds. Resolution order:
+#     1. $BORING_INSTALL_ROOT (env override) — always honored
+#     2. $HOME/.local/share/boring if it's already a steig/boring git
+#        checkout (back-compat for users installed before v0.7.1)
+#     3. $HOME/.local/opt/boring (new default — separates code from state)
 
 set -euo pipefail
 
 REPO_URL="${BORING_REPO_URL:-https://github.com/steig/boring.git}"
-INSTALL_ROOT="${BORING_INSTALL_ROOT:-$HOME/.local/share/boring}"
 BIN_DIR="${BORING_BIN_DIR:-$HOME/.local/bin}"
+
+# Resolve install root with back-compat for legacy ~/.local/share/boring/
+# checkouts. New default is ~/.local/opt/boring/ to avoid colliding with
+# the BORING_DATA_DIR runtime data path (registry.json, audit/, proxy/).
+resolve_install_root() {
+  if [[ -n "${BORING_INSTALL_ROOT:-}" ]]; then
+    echo "$BORING_INSTALL_ROOT"
+    return
+  fi
+  local legacy="$HOME/.local/share/boring"
+  if [[ -d "$legacy/.git" ]]; then
+    local url
+    url="$(git -C "$legacy" config --get remote.origin.url 2>/dev/null || echo '')"
+    if [[ "$url" == *"steig/boring"* ]]; then
+      echo "$legacy"
+      return
+    fi
+  fi
+  echo "$HOME/.local/opt/boring"
+}
+INSTALL_ROOT="$(resolve_install_root)"
 
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -112,7 +143,7 @@ install_boring() {
       error "$INSTALL_ROOT exists and is a git checkout of a different repo ($existing_url). Set BORING_INSTALL_ROOT to a different path, or remove the directory."
     fi
   elif [[ -e "$INSTALL_ROOT" ]]; then
-    error "$INSTALL_ROOT exists but is not a git checkout. Set BORING_INSTALL_ROOT to a different path, or remove the directory."
+    error "$INSTALL_ROOT exists but is not a git checkout. Set BORING_INSTALL_ROOT to a different path, or remove the directory. (Note: ~/.local/share/boring is also boring's runtime data dir per ARD-0001 — that's why v0.7.1+ defaults to ~/.local/opt/boring for the source tree.)"
   else
     info "Cloning boring → $INSTALL_ROOT ..."
     git clone --quiet --depth 1 "$REPO_URL" "$INSTALL_ROOT"

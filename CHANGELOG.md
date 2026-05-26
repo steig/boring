@@ -4,7 +4,13 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.7.0` — v0.3 through v0.6 slices (trust + observability, egress, dbx restore, headless run) shipped under this tag alongside the v0.7 harness-agnostic prereqs + save/wip CLI. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) and boring-ui (ARDs 0019-0022, 0029) still ahead.
+VERSION is `0.7.1` — bugfix release for the install.sh path collision below; no CLI behavior changes vs v0.7.0. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) and boring-ui (ARDs 0019-0022, 0029) still ahead.
+
+## [0.7.1] — 2026-05-26
+
+### Fixed
+
+- **`install.sh` no longer collides with `BORING_DATA_DIR`.** The v0.7.0 installer defaulted to cloning into `$HOME/.local/share/boring`, which is also boring's own runtime state directory (`registry.json`, `audit/`, `proxy/`, etc. per ARD-0001). Users who'd ever run `boring proxy install` or seen any boring runtime file got a hard error: `~/.local/share/boring exists but is not a git checkout`. Resolved by moving the default install root to `$HOME/.local/opt/boring`, with explicit back-compat detection for users who already installed at the legacy path before this fix. Resolution order: `$BORING_INSTALL_ROOT` env (always honored) → legacy `~/.local/share/boring/.git` if it's a `steig/boring` checkout → new default `~/.local/opt/boring`.
 
 ## [0.7.0] — 2026-05-26
 
