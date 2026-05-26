@@ -3,7 +3,7 @@
 # boring — dev container launcher for wrapped apps
 # https://github.com/steig/boring
 #
-VERSION="0.10.1"
+VERSION="0.11.0"
 #
 # Usage:
 #   boring open [--ui|--no-ui] [--no-dev] <git-url|.>
@@ -14,6 +14,7 @@ VERSION="0.10.1"
 #   boring save <profile|.>                          Promote WIP branch to PR (ARD-0022 §7)
 #   boring ui {status|stop|open} [<slug>]            Manage boring-ui processes (v0.8.0)
 #   boring proxy <subcommand>                        Host-side reverse proxy (ARD-0021, v1.x)
+#   boring secret {set|get|rm} <service>/<account>   Provision a secret in the OS keyring (ARD-0032)
 #   boring doctor                                    Diagnose environment
 #   boring version                                   Print version
 #   boring help                                      Print this help
@@ -1029,6 +1030,46 @@ cmd_proxy() {
 }
 
 # ============================================================================
+# cmd_secret — provision/read/remove a secret in the OS keyring (ARD-0032).
+# One-time, host-side helper so `secret://keychain:<service>/<account>` resolves
+# with zero per-use auth (e.g. an engineer drops a Theme Access token onto a
+# non-engineer's machine at onboarding; `boring open` injects it thereafter).
+# boring owns no store — this writes the OS keyring (macOS Keychain / libsecret),
+# the same backend the keychain: scheme reads. The value is read from STDIN,
+# keeping it out of shell history (macOS `security -w` does briefly place it in
+# the `security` process argv — see lib/secrets.sh; the Linux path pipes stdin).
+# ============================================================================
+cmd_secret() {
+  local action="${1:-}"
+  shift || true
+  case "$action" in
+    set) secret_set "${1:-}" ;;
+    get) secret_get "${1:-}" ;;
+    rm)  secret_rm  "${1:-}" ;;
+    ""|-h|--help|help)
+      cat <<'EOF'
+boring secret — provision a secret into the OS keyring for secret://keychain: resolution
+
+USAGE
+  printf '%s' "<value>" | boring secret set <service>/<account>
+  boring secret get <service>/<account>
+  boring secret rm  <service>/<account>
+
+The value is read from stdin (kept out of your shell history). The profile
+references it as secret://keychain:<service>/<account>, which boring injects
+into the container at `boring open` with zero per-use auth.
+
+EXAMPLE (one-time, at onboarding)
+  printf '%s' "$THEME_TOKEN" | boring secret set lamps-shop-theme/THEME_TOKEN
+EOF
+      ;;
+    *)
+      die "boring secret: unknown action '$action' (use: set | get | rm)"
+      ;;
+  esac
+}
+
+# ============================================================================
 # cmd_ui — per-project teardown/status/browser-reopen for the boring-ui stack
 # v0.8.0. The proxy is a singleton across slugs and is NOT stopped by `stop`.
 # ============================================================================
@@ -1180,6 +1221,9 @@ USAGE
   boring proxy <subcommand>                  Host-side reverse proxy (ARD-0021, v1.x)
                                              Subcommands: install, uninstall, serve,
                                              status, rotate-token
+  boring secret {set|get|rm} <svc>/<acct>    Provision a secret in the OS keyring so
+                                             secret://keychain:<svc>/<acct> resolves with
+                                             zero per-use auth (ARD-0032). set reads stdin.
   boring wip {start|commit|discard} <path>   WIP-branch lifecycle (ARD-0022 §3)
   boring save <path> [--message --draft ...] Promote WIP branch to PR (ARD-0022 §7)
   boring ui {status|stop|open} [<slug>]      Manage boring-ui processes (v0.8.0)
@@ -1224,6 +1268,7 @@ main() {
     restore)            cmd_restore "$@" ;;
     audit)              cmd_audit   "$@" ;;
     proxy)              cmd_proxy   "$@" ;;
+    secret)             cmd_secret  "$@" ;;
     wip)                cmd_wip     "$@" ;;
     save)               cmd_save    "$@" ;;
     ui)                 cmd_ui      "$@" ;;

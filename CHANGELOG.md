@@ -4,7 +4,13 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.10.1` — chat.js TypeError fix when --terminal-url mode is active. No CLI / API / schema changes.
+VERSION is `0.11.0` — `boring secret` local keyring provisioning for zero-auth non-engineer launches (ARD-0032).
+
+## [0.11.0] — 2026-05-26
+
+### Added
+
+- **`boring secret {set|get|rm} <service>/<account>` (ARD-0032).** Provisions a secret into the host OS keyring (macOS Keychain via `security`; Linux libsecret via `secret-tool`) — the same backend the `secret://keychain:` resolver already reads. Lets an engineer/IT drop a credential (e.g. a Shopify Theme Access token) onto a machine once at onboarding; `boring open` then resolves it and injects it via the existing `--remote-env` path with **zero per-use auth**. A non-engineer runs `boring open` (or clicks the project in the boring-ui picker, same `cmd_open`) and the container is pre-authenticated — no OAuth prompt, no vault sign-in, no `.env`. `set` reads the value from **stdin** so it never enters argv or shell history. boring still owns no secret store (ARD-0002 intent preserved): it writes the OS's existing keyring only. `list` is intentionally omitted — enumerating generic-password items is awkward and inconsistent across `security`/`secret-tool`; `get`/`rm` cover the need.
 
 ## [0.10.1] — 2026-05-26
 
