@@ -484,17 +484,38 @@ web_ui_ensure_container_claude() {
     die "web_ui: claude missing in container; cannot start ttyd terminal pane"
   fi
 
-  # Ensure /etc/boring/empty-mcp.json exists (idempotent). `{}` is the
-  # minimum-valid MCP config; --strict-mcp-config + this file together yield
-  # "zero MCP servers" deterministically.
+  # Ensure /etc/boring/empty-mcp.json exists with the EXACT content claude's
+  # MCP validator accepts. Verified empirically: claude rejects /dev/null
+  # ("MCP config is not a valid JSON") AND rejects bare `{}` ("mcpServers:
+  # Invalid input: expected record, received undefined"). Only the literal
+  # `{"mcpServers":{}}` shape is accepted. --strict-mcp-config + this file
+  # together yield "zero MCP servers" deterministically. Overwrites on
+  # every call so a v0.8.0-installed `{}` file gets corrected on next
+  # `boring open --ui`.
   docker exec -u root "$container_name" sh -c '
     set -e
-    if [ ! -f /etc/boring/empty-mcp.json ]; then
-      mkdir -p /etc/boring
-      printf "{}" > /etc/boring/empty-mcp.json
-      chmod 0444 /etc/boring/empty-mcp.json
-    fi
+    mkdir -p /etc/boring
+    printf "%s" "{\"mcpServers\":{}}" > /etc/boring/empty-mcp.json.tmp
+    chmod 0444 /etc/boring/empty-mcp.json.tmp
+    mv -f /etc/boring/empty-mcp.json.tmp /etc/boring/empty-mcp.json
   ' >/dev/null 2>&1 || die "web_ui: failed to seed /etc/boring/empty-mcp.json in container $container_name"
+}
+
+# ----------------------------------------------------------------------------
+# web_ui_preset_preview_default <preset>
+# ----------------------------------------------------------------------------
+# ARD-0022 §6.2 preview-URL defaults per preset. When a profile doesn't set
+# `preview_url:` (or `ui.preview_url:`), boring-ui falls back to these so the
+# right pane has something useful for the common cases.
+web_ui_preset_preview_default() {
+  case "$1" in
+    shopify)       echo "http://localhost:9292/" ;;
+    django-node)   echo "http://localhost:5173/" ;;
+    node)          echo "http://localhost:3000/" ;;
+    node-postgres) echo "http://localhost:3000/" ;;
+    python)        echo "" ;;  # no canonical dev-server port; user must set
+    *)             echo "" ;;
+  esac
 }
 
 # ----------------------------------------------------------------------------

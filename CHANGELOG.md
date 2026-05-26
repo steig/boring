@@ -4,7 +4,17 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.8.0` — `boring open --ui` lands. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) still ahead.
+VERSION is `0.8.1` — two v0.8.0 ship-blockers fixed. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) still ahead.
+
+## [0.8.1] — 2026-05-26
+
+### Fixed
+
+- **In-container `claude` failed to start under `--ui` with `Invalid MCP configuration: mcpServers: Invalid input: expected record, received undefined`.** v0.8.0's `web_ui_ensure_container_claude` wrote `printf "{}" > /etc/boring/empty-mcp.json` — but claude's MCP validator rejects bare `{}` (already verified empirically when boring-ui-backend's `emptyMCPConfigFile()` was written; the only accepted shape is the literal `{"mcpServers":{}}`). Fix: write the exact accepted shape; also remove the `if [ ! -f ]` guard so v0.8.0-installed bad files get corrected on next `--ui` run; also use temp+rename so chmod 0444 from a previous run doesn't block the rewrite (same pattern as v0.7.2 egress fix).
+
+  **Immediate unblock for users on v0.8.0 mid-session:** `docker exec -u root <profile>-dev-1 bash -c 'echo "{\"mcpServers\":{}}" > /etc/boring/empty-mcp.json'` then hit Enter in the ttyd pane to reconnect.
+
+- **Preview iframe showed "No preview configured" for shopify / django-node / node / node-postgres profiles without an explicit `preview_url:`.** v0.8.0's preview-URL resolution stopped at `.ui.preview_url // .preview_url // ""` — never consulted the ARD-0022 §6.2 per-preset defaults table. Fix: new `web_ui_preset_preview_default()` in `lib/web_ui.sh` codifies the table (shopify→`9292`, django-node→`5173`, node→`3000`, node-postgres→`3000`, python→empty); `cmd_open --ui` falls back to it when both profile fields are empty. python preset still requires explicit `preview_url:` since there's no canonical dev-server port.
 
 ## [0.8.0] — 2026-05-26
 

@@ -3,7 +3,7 @@
 # boring — dev container launcher for wrapped apps
 # https://github.com/steig/boring
 #
-VERSION="0.8.0"
+VERSION="0.8.1"
 #
 # Usage:
 #   boring open [--ui|--no-ui] <git-url|.>           Clone or attach a boring-enabled repo
@@ -361,11 +361,19 @@ _cmd_open_maybe_start_ui() {
   # Confirm claude is in the container + seed empty MCP config.
   web_ui_ensure_container_claude "$container_name"
 
-  # Resolve preview URL: profile.ui.preview_url wins over top-level
-  # preview_url (boring-ui is the only consumer of ui.preview_url; the
-  # top-level field still exists for legacy/non-UI surfaces).
+  # Resolve preview URL with fallback chain per ARD-0022 §6:
+  #   1. profile.ui.preview_url (boring-ui-specific override)
+  #   2. profile.preview_url (top-level, legacy/shared surfaces)
+  #   3. preset default from web_ui_preset_preview_default (ARD-0022 §6.2 table:
+  #      shopify→9292, django-node→5173, node→3000, node-postgres→3000)
+  #   4. Empty → backend renders the "no preview configured" fallback message.
   local preview_url
   preview_url="$(jq -r '.ui.preview_url // .preview_url // ""' <<<"$profile_json")"
+  if [[ -z "$preview_url" ]]; then
+    local _preset
+    _preset="$(jq -r '.preset // ""' <<<"$profile_json")"
+    preview_url="$(web_ui_preset_preview_default "$_preset")"
+  fi
 
   # Start the singleton proxy if it's not already running.
   web_ui_proxy_start "$SCRIPT_DIR"
