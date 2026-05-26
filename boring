@@ -3,7 +3,7 @@
 # boring — dev container launcher for wrapped apps
 # https://github.com/steig/boring
 #
-VERSION="0.7.3"
+VERSION="0.7.4"
 #
 # Usage:
 #   boring open <git-url|.>                          Clone or attach a boring-enabled repo
@@ -867,6 +867,92 @@ cmd_version() {
   echo "boring $VERSION"
 }
 
+# ============================================================================
+# cmd_upgrade — pull latest from origin/main (or a pinned tag) at SCRIPT_DIR
+# ============================================================================
+# boring is installed as a git checkout (install.sh clones it); upgrade is
+# just `git fetch + reset --hard` against the install root. Refuses if the
+# checkout looks tampered (uncommitted changes) unless --force.
+
+cmd_upgrade() {
+  local target="main" force=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tag) target="${2:?--tag requires a value}"; shift 2 ;;
+      --force) force=1; shift ;;
+      -h|--help)
+        cat <<EOF
+boring upgrade — pull the latest boring release from GitHub
+
+USAGE
+  boring upgrade [--tag <version>] [--force]
+
+OPTIONS
+  --tag <version>   Pin to a specific tag (e.g. v0.7.3) instead of latest main.
+  --force           Discard uncommitted local changes in the install root.
+
+The install root is wherever boring resolves itself via BASH_SOURCE
+($SCRIPT_DIR). Re-run the curl installer if you need to change paths.
+EOF
+        return 0
+        ;;
+      *) die "cmd_upgrade: unknown arg: $1" ;;
+    esac
+  done
+
+  if [[ ! -d "$SCRIPT_DIR/.git" ]]; then
+    log_error "boring at $SCRIPT_DIR isn't a git checkout — can't auto-upgrade."
+    log_error "Re-run the curl installer:"
+    log_error "  curl -fsSL https://raw.githubusercontent.com/steig/boring/main/install.sh | bash"
+    exit 1
+  fi
+  require_cmd git
+
+  # Refuse to clobber local work unless --force.
+  if [[ "$force" -eq 0 ]]; then
+    local dirty
+    dirty="$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null | head -1)"
+    if [[ -n "$dirty" ]]; then
+      log_error "$SCRIPT_DIR has uncommitted changes — refusing to upgrade."
+      log_error "Commit/stash them, or pass --force to discard."
+      exit 1
+    fi
+  fi
+
+  local old_version="$VERSION"
+  local old_sha
+  old_sha="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD)"
+
+  log_step "Fetching from origin"
+  git -C "$SCRIPT_DIR" fetch --quiet --tags origin "$target" 2>/dev/null \
+    || git -C "$SCRIPT_DIR" fetch --quiet --tags origin
+  local new_ref
+  if [[ "$target" == "main" ]]; then
+    new_ref="FETCH_HEAD"
+  else
+    new_ref="refs/tags/$target"
+    git -C "$SCRIPT_DIR" rev-parse --verify --quiet "$new_ref" >/dev/null \
+      || die "tag not found: $target (try: gh release list -R steig/boring)"
+  fi
+
+  local new_sha
+  new_sha="$(git -C "$SCRIPT_DIR" rev-parse --short "$new_ref")"
+  if [[ "$old_sha" == "$new_sha" ]]; then
+    log_success "already up to date (boring $old_version, $old_sha)"
+    return 0
+  fi
+
+  log_step "Updating $old_sha → $new_sha"
+  git -C "$SCRIPT_DIR" reset --hard --quiet "$new_ref"
+
+  local new_version
+  new_version="$(grep '^VERSION=' "$SCRIPT_DIR/boring" | cut -d'"' -f2)"
+  log_success "boring $old_version → $new_version ($new_sha)"
+  log_info "  install root → $SCRIPT_DIR"
+  log_info "  changelog    → $SCRIPT_DIR/CHANGELOG.md"
+  log_info "  releases     → https://github.com/steig/boring/releases"
+}
+
 cmd_help() {
   cat <<EOF
 boring $VERSION — dev container launcher for wrapped apps
@@ -883,6 +969,7 @@ USAGE
   boring wip {start|commit|discard} <path>   WIP-branch lifecycle (ARD-0022 §3)
   boring save <path> [--message --draft ...] Promote WIP branch to PR (ARD-0022 §7)
   boring doctor                              Diagnose environment
+  boring upgrade [--tag <v>] [--force]       Pull the latest boring from GitHub
   boring version                             Print version
   boring help                                Print this help
 
@@ -917,6 +1004,7 @@ main() {
     wip)                cmd_wip     "$@" ;;
     save)               cmd_save    "$@" ;;
     doctor)             cmd_doctor  "$@" ;;
+    upgrade)            cmd_upgrade "$@" ;;
     version|-v|--version) cmd_version ;;
     help|-h|--help)     cmd_help ;;
     *)

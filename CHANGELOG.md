@@ -4,7 +4,17 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.7.3` — third ship-blocker bugfix release in the same hour as v0.7.0. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) and boring-ui (ARDs 0019-0022, 0029) still ahead.
+VERSION is `0.7.4` — adds the `boring upgrade` subcommand that's been missing since the curl installer landed. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) and boring-ui (ARDs 0019-0022, 0029) still ahead.
+
+## [0.7.4] — 2026-05-26
+
+### Added
+
+- **`boring upgrade` subcommand.** Pulls the latest boring from `origin/main` at the install root (`SCRIPT_DIR` per the existing `readlink -f` resolution). Refuses with a clear error if uncommitted local changes are present (unless `--force`). Supports `--tag <version>` to pin to a specific tag (e.g. `boring upgrade --tag v0.7.3` to roll back). Print before/after VERSION + SHA + links to changelog and releases page.
+
+  Closes the obvious gap that surfaced during v0.7.0–0.7.3's bugfix cascade: the only upgrade path was `cd ~/.local/opt/boring && git pull` or re-running the curl installer.
+
+  Refuses to run if `$SCRIPT_DIR/.git` isn't a directory — i.e. if boring wasn't installed via the curl installer's git-clone path. Prints the install-script command in that case.
 
 ## [0.7.3] — 2026-05-26
 
