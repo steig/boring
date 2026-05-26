@@ -4,7 +4,63 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is currently `0.6.0-dev` — the code surface covers ARD-0008's v0.3 through v0.6 slices; v1.0 polish (brew formula, marketing final pass, etc.) is still pending.
+VERSION is `0.7.0` — v0.3 through v0.6 slices (trust + observability, egress, dbx restore, headless run) shipped under this tag alongside the v0.7 harness-agnostic prereqs + save/wip CLI. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) and boring-ui (ARDs 0019-0022, 0029) still ahead.
+
+## [0.7.0] — 2026-05-26
+
+This release bundles all the previously-unreleased work from v0.3 → v0.6 plus the v0.7 slice (harness-agnostic prereqs + save/wip CLI + first major real-stack example).
+
+### Added — v0.7 harness-agnostic prereqs + save/wip CLI + immich example (2026-05-25/26)
+
+- **`boring save <profile|.>`** — promote a WIP branch to a draft PR per the profile's `save:` configuration (ARD-0022 §7). Reads `save.target_branch`, `save.reviewers_from`/`save.reviewers`, `save.draft_by_default`, `save.branch_prefix`, `save.pr_template`. Branches the current WIP head into `<branch_prefix><AI-slug>-<date>-<sha>`, pushes, opens a PR via `gh pr create`. Leaves WIP intact on any failure with an actionable error.
+- **`boring wip {start|commit|discard} <profile|.>`** — WIP-branch lifecycle for marketer sessions (ARD-0022 §3). `start` creates `boring/wip/<marketer>/<ts>`; `commit --prompt <text>` stages all + commits with an AI-summarized message via `claude --print`; `discard` deletes (refuses unsaved commits unless `--force`).
+- **`lib/saver.sh`** — the underlying module (~330 LOC, bash 3.2-compat). Public functions: `saver_wip_branch_name`, `saver_create_wip_branch`, `saver_commit_turn`, `saver_summarize_turn`, `saver_summarize_pr`, `saver_save`, `saver_discard_wip`.
+- **`lib/guardrails.sh`** — new module (~160 LOC) for harness-agnostic codegen per ARD-0026 + ARD-0028. Per-harness translation tables (`_guardrails_claude_tool` / `_guardrails_opencode_tool`) map canonical tool names (`edit`, `run`, `read`, `web_fetch`, `web_search`) to per-harness native names. New codegen artifacts emitted to `.boring/codegen/`: `CLAUDE.md`, `AGENTS.md` (sibling per ARD-0028), `opencode-permissions.json` (per ARD-0026 §4). `guardrails_resolve_paths` computes `(preset default + profile.allowed_paths) − profile.disallowed_paths`. `cmd_open` now calls `guardrails_emit_codegen_dir` after the existing ARD-0009 runtime emit.
+- **Profile schema additions (`lib/profile.sh`)** — all optional, sensible defaults:
+  - `allowed_paths:` / `disallowed_paths:` — glob lists; resolved at codegen time
+  - `save:` block: `target_branch`, `reviewers_from`/`reviewers`, `draft_by_default`, `branch_prefix`, `pr_template`
+  - `preview_url:` (string) / `preview_urls:` (list of `{name, url}`)
+  - `wip_branch_ttl:` / `wip_branch_grace:` — duration strings (e.g. `7d`, `24h`)
+  - **`allowed_claude_tools:` → `allowed_tools:` rename (back-compat alias)** — both keys parse; `allowed_claude_tools:` warns + rewrites to `allowed_tools:` in-memory; hard error if both keys set in the same profile (security-relevant disagreement).
+- **`templates/_shared/agent/workflow.md`** — universal CLAUDE.md/AGENTS.md template with substitution tokens (`{{TOOL_EDIT}}`, `{{TOOL_RUN}}`, `{{TOOL_READ}}`, `{{HARNESS_FILENAME}}`, `{{PROFILE_SNIPPET}}`).
+- **Per-preset path-allowlist defaults** at `templates/{shopify,django-node,python,node,node-postgres}/allowed-paths.yaml` per ARD-0022 §5.2 verbatim.
+- **`examples/immich/`** — first real-world stack example, separate from the curated presets. Custom `stack.dockerfile:` FROM `ghcr.io/immich-app/base-server-dev`; three sidecars (custom postgres with VectorChord+pgvecto.rs, Valkey, immich-machine-learning); forward_ports `[2283, 3000, 9230, 9231]`; ten env vars matching upstream immich's docker/example.env shape. Bring-up confirmed end-to-end through boring: 4 services up, immich API responding on `:2283` (v3.0.0), web frontend on `:3000`.
+- **AGENTS.md mount entry in `lib/compose.sh`** — binds `<repo>/.boring/codegen/AGENTS.md` to `/home/dev/.config/opencode/AGENTS.md:ro` per ARD-0028 §3.
+- **Test fixtures + smoke tests:**
+  - `tests/fixtures/profile-with-boring-ui-fields.yaml` exercises every new field
+  - `tests/fixtures/profile-with-deprecated-allowed-claude-tools.yaml` exercises the back-compat path
+  - `tests/smoke-boring-ui-schema.sh` — 27-assertion schema smoke
+  - `tests/smoke-saver.sh` — 24-assertion save-flow smoke
+  - Full suite: 7 smoke tests pass under macOS `/bin/bash 3.2`.
+
+### Added — v0.7 ARDs
+
+- [ARD-0016](docs/ards/ard-0016-repo-side-safety-nets-as-prerequisite.md) — repo-side safety nets (branch protection + per-preset PR templates) as a boring prerequisite; extends ARD-0005 past the container boundary
+- [ARD-0017](docs/ards/ard-0017-agent-workflow-rules-derived-from-guardrails.md) — agent workflow rules: preset-baked CLAUDE.md + per-profile snippet derived from `guardrails:` at codegen
+- [ARD-0018](docs/ards/ard-0018-vscode-extension-security-and-profile-declaration.md) — VS Code extensions are profile-declared trust-anchor content
+- [ARD-0019](docs/ards/ard-0019-boring-ui-non-engineer-browser-surface.md) — boring-ui umbrella (browser surface for non-engineers, post-v1.0)
+- [ARD-0020](docs/ards/ard-0020-opencode-as-boring-ui-agent-harness.md) — OpenCode as the agent harness; subscription verification is the precondition gate
+- [ARD-0021](docs/ards/ard-0021-boring-ui-host-proxy-and-project-picker.md) — host-side reverse proxy + project picker at `https://boring.local/`
+- [ARD-0022](docs/ards/ard-0022-boring-ui-session-and-trust-model.md) — session + trust model (single chat per project, auto-branch, save flow)
+- [ARD-0026](docs/ards/ard-0026-harness-agnostic-guardrails-and-path-allowlist.md) — harness-agnostic guardrails + path allowlist (amends ARD-0009)
+- [ARD-0027](docs/ards/ard-0027-opencode-audit-emit-path.md) — OpenCode emit path into the same audit FIFO (amends ARD-0010)
+- [ARD-0028](docs/ards/ard-0028-agents-md-codegen-sibling-to-claude-md.md) — AGENTS.md codegen alongside CLAUDE.md (amends ARD-0017)
+- [ARD-0029](docs/ards/ard-0029-claude-shell-out-as-v0-boring-ui-backend.md) — v0 deviation: `claude --print` shell-out as boring-ui backend because user's opencode lacked configured Claude Code subscription provider; time-bound, swap back to ARD-0020 path when subscription support matures
+
+### Fixed — examples/immich
+
+- **`setup:` mkdir uses portable POSIX for-loop** instead of bash brace expansion (postCreateCommand runs via `/bin/sh`, which created a literal directory named `{encoded-video,thumbs,...}`)
+- **`IMMICH_HOST: "0.0.0.0"` env** — without it Node 22+ binds the API only to IPv6 `::1`, and Vite's IPv4-only HTTP proxy gets ECONNREFUSED → web UI shows 502
+- **`IMMICH_SERVER_URL: "http://localhost:2283/"` env** — vite.config.ts default proxy target is `http://immich-server:2283/` (a compose service name that exists in upstream's split-container layout but not here)
+- **upload subdir markers** (`encoded-video`, `thumbs`, `backups`, `library`, `profile`, `upload`) created with `.immich` files per immich's StorageService system-integrity check
+
+### v1.x preview (not installed by this release)
+
+Substantial boring-ui v0 prototype code lives in `tools/boring-{proxy,ui-backend}/` after this release. **It is not packaged or installed by `install.sh`** and should not be considered part of the supported v0.7 surface. See ARD-0019 for the v1.x plan and ARD-0029 for the v0 deviation that's currently in tree.
+
+- `tools/boring-proxy/` (~2800 LOC Go) — host-side reverse proxy + project picker per ARD-0021
+- `tools/boring-ui-backend/` (~3700 LOC Go + HTML/CSS/JS) — in-container chat backend per ARD-0022 with mock + real claude providers, embedded terminal pane (ttyd), path-allowlist enforcement (reactive git revert), per-turn cost tracking
+- `scripts/verify-opencode-subscription.sh` + `docs/verify-opencode-subscription.md` — ARD-0020 §3 verification protocol Tom can run when ready
 
 ### Added — v0.6 headless `boring run` (2026-05-24, ARD-0013)
 
