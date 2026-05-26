@@ -507,12 +507,20 @@ web_ui_ensure_container_claude() {
 # ARD-0022 §6.2 preview-URL defaults per preset. When a profile doesn't set
 # `preview_url:` (or `ui.preview_url:`), boring-ui falls back to these so the
 # right pane has something useful for the common cases.
+#
+# v0.9.1 (2026-05-26): switched all defaults from `http://localhost:...` to
+# `http://127.0.0.1:...`. Docker compose port forwards bind IPv4 only by
+# default; `localhost` on macOS resolves to ::1 (IPv6) first via getaddrinfo,
+# producing a broken iframe load before the browser retries. Explicit
+# 127.0.0.1 avoids the round-trip + matches what docker-compose actually
+# binds. Profiles can still override with `preview_url:` (top-level) or
+# `ui.preview_url:` if they want IPv6 or a different host.
 web_ui_preset_preview_default() {
   case "$1" in
-    shopify)       echo "http://localhost:9292/" ;;
-    django-node)   echo "http://localhost:5173/" ;;
-    node)          echo "http://localhost:3000/" ;;
-    node-postgres) echo "http://localhost:3000/" ;;
+    shopify)       echo "http://127.0.0.1:9292/" ;;
+    django-node)   echo "http://127.0.0.1:5173/" ;;
+    node)          echo "http://127.0.0.1:3000/" ;;
+    node-postgres) echo "http://127.0.0.1:3000/" ;;
     python)        echo "" ;;  # no canonical dev-server port; user must set
     *)             echo "" ;;
   esac

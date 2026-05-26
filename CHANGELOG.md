@@ -4,7 +4,15 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.9.0` — `dev:` profile field + foreground dev-command UX (ARD-0030). v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) still ahead.
+VERSION is `0.9.1` — preset preview-URL defaults switched to `127.0.0.1` to avoid IPv6/IPv4 loopback mismatch. v1.0 polish (brew formula, final docs reconciliation, full Codex/Gemini support) still ahead.
+
+## [0.9.1] — 2026-05-26
+
+### Fixed
+
+- **Preset preview-URL defaults switched from `localhost` to `127.0.0.1`** in `web_ui_preset_preview_default` (`lib/web_ui.sh`). Surfaced while testing shop-theme: the v0.8.1 default `http://localhost:9292/` produced a blank iframe even with `pnpm dev` serving correctly inside the container. Root cause is the same IPv6/IPv4 mismatch family as v0.7.x's `IMMICH_HOST` fix — docker-compose port forwards bind IPv4 only by default; macOS resolves `localhost` to `::1` (IPv6) first via getaddrinfo; the iframe request hits IPv6 loopback :9292 (nothing listening), gives up or noticeably delays before retry. Explicit `127.0.0.1` matches what docker-compose actually binds. Updated for all four affected presets: shopify (9292), django-node (5173), node (3000), node-postgres (3000).
+
+  **Profile override unchanged:** if you want `localhost` (e.g. IPv6 testing) or a custom host, `preview_url:` (top-level) or `ui.preview_url:` still wins over the preset default per the ARD-0022 §6 resolution chain — no regression for anyone who's set their own URL.
 
 ## [0.9.0] — 2026-05-26
 
