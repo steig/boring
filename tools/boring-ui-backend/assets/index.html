@@ -11,14 +11,21 @@
     <div class="brand">boring <span class="slug" id="slug">project</span></div>
     <div class="actions">
       <span class="session-cost" id="session-cost" hidden></span>
+      <button class="btn icon-btn" id="toggle-left" title="Hide left pane" aria-pressed="false">◧</button>
+      <button class="btn icon-btn" id="toggle-preview" title="Hide preview" aria-pressed="false">◨</button>
       <button class="btn" id="save-btn">Save</button>
     </div>
   </header>
 
-  <main class="panes">
+  <main class="panes" id="panes">
     <section class="left-pane">
       {{LEFT_PANE}}
     </section>
+
+    <!-- Draggable divider. Bound in chat.js; pointer-driven so it works over
+         iframes (which otherwise swallow mousemove) via a .dragging overlay. -->
+    <div class="pane-gutter" id="pane-gutter" role="separator"
+         aria-orientation="vertical" tabindex="0" title="Drag to resize"></div>
 
     <section class="preview-pane">
       {{PREVIEW_PANE}}

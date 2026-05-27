@@ -1,6 +1,6 @@
 # ARD-0031: Iframe-via-backend-proxy strips `X-Frame-Options` + CSP `frame-ancestors` for the boring-ui preview pane
 
-- **Status:** Accepted
+- **Status:** Accepted (partially amended) — §1's `/preview/*` same-origin sub-path mount is **superseded by [ARD-0033](ard-0033-preview-iframe-on-dedicated-origin.md)** (real upstreams emit root-absolute URLs that escape a sub-path; the preview now runs on its own origin/port). The header-strip mechanism (§2) and safety boundary (§Rationale) are retained.
 - **Date:** 2026-05-26
 - **Type:** Mini-ARD
 - **Extends:** [ARD-0019](ard-0019-boring-ui-non-engineer-browser-surface.md) §1 (preview pane), [ARD-0022](ard-0022-boring-ui-session-and-trust-model.md) §6 (preview URL resolution), [ARD-0021](ard-0021-boring-ui-host-proxy-and-project-picker.md) (proxy responsibilities — explicitly NOT growing them here)

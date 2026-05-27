@@ -77,12 +77,55 @@ body {
 }
 .btn.primary:hover:not(:disabled) { filter: brightness(1.08); }
 
+/* Compact glyph buttons in the header (pane show/hide toggles). aria-pressed
+   reflects the collapsed state, lit with the accent when a pane is hidden. */
+.btn.icon-btn {
+  font-family: var(--mono);
+  padding: 0.3rem 0.5rem;
+  line-height: 1;
+}
+.btn.icon-btn[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
 .panes {
   flex: 1 1 auto;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* Three tracks: left | gutter | right. The fr ratios are driven by chat.js
+     on drag (default 1fr/1fr = even split); the fixed-width middle track is
+     the resize handle. fr units split the space remaining after the gutter,
+     so the 6px handle never throws the ratio off. */
+  grid-template-columns: var(--left-fr, 1fr) 6px var(--right-fr, 1fr);
   min-height: 0;        /* allow children to scroll */
 }
+
+/* Collapse states (toggled from the header buttons). The hidden pane and the
+   gutter are removed from layout; the surviving pane takes the full width. */
+.panes.hide-left  { grid-template-columns: 0 0 1fr; }
+.panes.hide-right { grid-template-columns: 1fr 0 0; }
+.panes.hide-left  .left-pane,
+.panes.hide-left  .pane-gutter,
+.panes.hide-right .preview-pane,
+.panes.hide-right .pane-gutter { display: none; }
+
+/* Resize handle. Sits on the fixed middle grid track; widens its hit area with
+   a transparent inset shadow rather than real width so the layout math stays
+   on the 6px track. */
+.pane-gutter {
+  cursor: col-resize;
+  background: var(--border);
+  position: relative;
+  z-index: 2;
+}
+.pane-gutter:hover,
+.pane-gutter:focus-visible { background: var(--accent); outline: none; }
+
+/* While dragging, kill pointer events on iframes (which otherwise capture the
+   mouse and freeze the drag) and suppress text selection across the doc. */
+.panes.dragging iframe { pointer-events: none; }
+.panes.dragging { user-select: none; cursor: col-resize; }
 
 /* --- Left pane (chat OR terminal-iframe; see renderIndex) --------------- */
 

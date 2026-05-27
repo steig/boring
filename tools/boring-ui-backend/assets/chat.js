@@ -612,6 +612,169 @@
     });
   }
 
+  // --- Preview address bar: reflect in-frame navigation ------------------
+  //
+  // The preview iframe is a different origin (its own proxy port, ARD-0033),
+  // so we can't read its location directly. A script injected into the proxied
+  // HTML (preview.go) postMessages the current path up to us; we map it onto
+  // the UPSTREAM URL for the muted address display + the open-in-new-tab link.
+  // Only the top preview frame posts (nested pixel sandboxes stay silent).
+  if (previewIframe) {
+    let previewOrigin = "";
+    try {
+      previewOrigin = new URL(previewIframe.src, location.href).origin;
+    } catch (e) {
+      /* malformed src — leave the listener inert */
+    }
+    const previewOpen = $("preview-open");
+    const previewUrlEl = document.querySelector(".preview-url");
+    // The open-in-new-tab href is the UPSTREAM URL; use its origin as the base
+    // we map reported paths onto (so the bar shows the real dev-server URL, not
+    // the internal proxy port).
+    let upstreamOrigin = "";
+    if (previewOpen) {
+      try {
+        upstreamOrigin = new URL(previewOpen.getAttribute("href"), location.href).origin;
+      } catch (e) {
+        /* no usable upstream base */
+      }
+    }
+    window.addEventListener("message", (e) => {
+      if (!previewOrigin || e.origin !== previewOrigin) return; // only our preview frame
+      const d = e.data;
+      if (!d || d.source !== "boring-preview" || typeof d.path !== "string") return;
+      if (!upstreamOrigin) return;
+      let full;
+      try {
+        full = new URL(d.path, upstreamOrigin).href;
+      } catch (e2) {
+        return;
+      }
+      if (previewOpen) previewOpen.setAttribute("href", full);
+      if (previewUrlEl) {
+        const display = full.replace(/^https?:\/\//, "");
+        previewUrlEl.textContent = display;
+        previewUrlEl.title = full;
+      }
+    });
+  }
+
+  // --- Pane layout: resizable split + collapse toggles -------------------
+  //
+  // The two panes sit in a CSS grid (.panes) whose left/right fr ratios are
+  // driven from here; the fixed middle grid track is a draggable gutter.
+  // Header buttons collapse either pane. Layout (split ratio + which pane is
+  // hidden) persists per-project in localStorage, keyed on the path so
+  // different slugs remember their own arrangement. Works identically whether
+  // the left pane is the chat thread or the terminal iframe.
+  const panes = $("panes");
+  const gutter = $("pane-gutter");
+  const toggleLeftBtn = $("toggle-left");
+  const togglePreviewBtn = $("toggle-preview");
+  if (panes) {
+    const LS_KEY = "boring-ui:layout:" + location.pathname;
+    const MIN = 0.15;
+    const MAX = 0.85; // clamp so neither pane fully vanishes while dragging
+
+    const clampRatio = (r) => Math.min(MAX, Math.max(MIN, r));
+
+    function loadLayout() {
+      const def = { ratio: 0.5, hidden: null }; // hidden: null | "left" | "right"
+      try {
+        const raw = localStorage.getItem(LS_KEY);
+        if (!raw) return def;
+        const p = JSON.parse(raw);
+        return {
+          ratio: typeof p.ratio === "number" ? clampRatio(p.ratio) : 0.5,
+          hidden: p.hidden === "left" || p.hidden === "right" ? p.hidden : null,
+        };
+      } catch {
+        return def;
+      }
+    }
+    function saveLayout() {
+      try {
+        localStorage.setItem(LS_KEY, JSON.stringify(state));
+      } catch {
+        /* private mode / storage disabled — layout just won't persist */
+      }
+    }
+    function applyLayout() {
+      panes.style.setProperty("--left-fr", state.ratio + "fr");
+      panes.style.setProperty("--right-fr", 1 - state.ratio + "fr");
+      panes.classList.toggle("hide-left", state.hidden === "left");
+      panes.classList.toggle("hide-right", state.hidden === "right");
+      if (toggleLeftBtn) {
+        const hidden = state.hidden === "left";
+        toggleLeftBtn.setAttribute("aria-pressed", String(hidden));
+        toggleLeftBtn.title = hidden ? "Show left pane" : "Hide left pane";
+      }
+      if (togglePreviewBtn) {
+        const hidden = state.hidden === "right";
+        togglePreviewBtn.setAttribute("aria-pressed", String(hidden));
+        togglePreviewBtn.title = hidden ? "Show preview" : "Hide preview";
+      }
+    }
+
+    const state = loadLayout();
+    applyLayout();
+
+    // Drag-to-resize. Pointer capture keeps tracking even when the cursor
+    // crosses an iframe; the .dragging class also disables iframe pointer
+    // events as a belt-and-braces measure.
+    if (gutter) {
+      gutter.addEventListener("pointerdown", (e) => {
+        if (state.hidden) return; // nothing to resize when a pane is collapsed
+        e.preventDefault();
+        panes.classList.add("dragging");
+        gutter.setPointerCapture(e.pointerId);
+        const onMove = (ev) => {
+          const rect = panes.getBoundingClientRect();
+          if (rect.width === 0) return;
+          state.ratio = clampRatio((ev.clientX - rect.left) / rect.width);
+          panes.style.setProperty("--left-fr", state.ratio + "fr");
+          panes.style.setProperty("--right-fr", 1 - state.ratio + "fr");
+        };
+        const onUp = (ev) => {
+          panes.classList.remove("dragging");
+          try {
+            gutter.releasePointerCapture(ev.pointerId);
+          } catch {
+            /* capture may already be gone */
+          }
+          gutter.removeEventListener("pointermove", onMove);
+          gutter.removeEventListener("pointerup", onUp);
+          saveLayout();
+        };
+        gutter.addEventListener("pointermove", onMove);
+        gutter.addEventListener("pointerup", onUp);
+      });
+
+      // Keyboard resize: arrow keys nudge the split 2% at a time.
+      gutter.addEventListener("keydown", (e) => {
+        if (state.hidden) return;
+        let d = 0;
+        if (e.key === "ArrowLeft") d = -0.02;
+        else if (e.key === "ArrowRight") d = 0.02;
+        else return;
+        e.preventDefault();
+        state.ratio = clampRatio(state.ratio + d);
+        applyLayout();
+        saveLayout();
+      });
+    }
+
+    // Collapse toggles. At most one pane hidden at a time — collapsing one
+    // un-collapses the other so the view never goes fully blank.
+    const setHidden = (which) => {
+      state.hidden = state.hidden === which ? null : which;
+      applyLayout();
+      saveLayout();
+    };
+    if (toggleLeftBtn) toggleLeftBtn.addEventListener("click", () => setHidden("left"));
+    if (togglePreviewBtn) togglePreviewBtn.addEventListener("click", () => setHidden("right"));
+  }
+
   // --- Boot --------------------------------------------------------------
 
   // Boot:
