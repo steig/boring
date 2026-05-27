@@ -37,7 +37,8 @@ var assetsFS embed.FS
 type Server struct {
 	Slug         string
 	Workdir      string   // project working directory (used by /api/save AND turn spawn)
-	PreviewURL   string   // absolute URL the right-pane iframe loads (per ARD-0022 §6); empty -> fallback message
+	PreviewURL   string   // absolute UPSTREAM URL being previewed (per ARD-0022 §6); shown in the header strip + open-in-new-tab link. Empty -> fallback message.
+	PreviewFrameURL string // absolute URL the right-pane iframe actually loads: the dedicated-origin preview proxy, e.g. http://127.0.0.1:<port>/ (ARD-0033). Empty even when PreviewURL is set -> fallback (no preview port wired).
 	TerminalURL  string   // absolute URL the LEFT-pane iframe loads when set (replaces chat thread w/ embedded terminal, e.g. ttyd serving claude); empty -> SSE chat UI
 	Provider     string   // "mock" | "claude" — selects the turn runner in handleMessages
 	AllowedPaths []string // resolved workdir-relative glob set for reactive path-allowlist enforcement (ARD-0029 §6 gap #1); empty -> no enforcement
@@ -88,13 +89,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/save/preview", s.handleSavePreview)
 	mux.HandleFunc("/api/undo", s.handleUndo)
 
-	// /preview/* reverse-proxies to PreviewURL with X-Frame-Options + CSP
-	// frame-ancestors stripped (ARD-0031). Registered with a trailing slash
-	// so the stdlib mux treats it as a subtree pattern matching /preview,
-	// /preview/, and /preview/anything/below. Mount BEFORE the "/" catch-all
-	// so the catch-all doesn't shadow it. Implementation in preview.go.
-	mux.HandleFunc("/preview/", s.handlePreview)
-	mux.HandleFunc("/preview", s.handlePreview)
+	// NOTE: the preview reverse-proxy is NOT mounted here. As of ARD-0033 it
+	// runs on its own dedicated host port (a separate http.Server in main.go,
+	// built via newPreviewProxyHandler) so Shopify-style root-absolute asset
+	// URLs resolve correctly. This mux only serves the chat UI + its assets.
 
 	// Static assets.
 	mux.HandleFunc("/chat.css", s.handleAsset("assets/chat.css", "text/css; charset=utf-8"))
@@ -121,7 +119,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(renderIndex(string(data), s.PreviewURL, s.TerminalURL)))
+	_, _ = w.Write([]byte(renderIndex(string(data), s.PreviewURL, s.PreviewFrameURL, s.TerminalURL)))
 }
 
 // renderIndex performs serve-time substitution of the pane content.
@@ -131,7 +129,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // We don't use html/template because the only dynamic values are CLI flags
 // (not user-supplied), and we want the HTML readable in source.
 // strings.ReplaceAll is sufficient.
-func renderIndex(html, previewURL, terminalURL string) string {
+func renderIndex(html, previewURL, previewFrameURL, terminalURL string) string {
 	htmlEsc := strings.NewReplacer(`"`, "&quot;", `<`, "&lt;", `>`, "&gt;", `&`, "&amp;")
 
 	// LEFT_PANE: terminal iframe when configured, chat composer + thread otherwise.
@@ -149,17 +147,25 @@ func renderIndex(html, previewURL, terminalURL string) string {
 	}
 	html = strings.ReplaceAll(html, "{{LEFT_PANE}}", leftPane)
 
-	// PREVIEW_PANE: unchanged from prior implementation.
+	// PREVIEW_PANE: the iframe loads the dedicated-origin preview proxy
+	// (previewFrameURL, e.g. http://127.0.0.1:<port>/), NOT the upstream
+	// directly and NOT a sub-path. See ARD-0033 / preview.go for why.
+	//
+	// We need BOTH a configured upstream (previewURL) AND a wired preview
+	// proxy origin (previewFrameURL). The latter is empty when --preview-port
+	// wasn't passed (e.g. a bare `boring-ui-backend --preview-url ...` with no
+	// listener) — in that case we degrade to the fallback message rather than
+	// render an iframe pointing nowhere.
 	var pane string
-	if previewURL != "" {
-		// HTML-attribute-safe escape for the URL inside src="..." and href.
-		// The URL comes from a CLI flag (operator-controlled), so this is
+	if previewURL != "" && previewFrameURL != "" {
+		// HTML-attribute-safe escape for URLs inside src="..." / href="...".
+		// The URLs come from CLI flags (operator-controlled), so this is
 		// defense in depth rather than untrusted-input sanitization.
 		htmlEsc := strings.NewReplacer(`"`, "&quot;", `<`, "&lt;", `>`, "&gt;", `&`, "&amp;")
-		safe := htmlEsc.Replace(previewURL)
-		// displayURL is what we show in the muted text strip (stripped of
-		// scheme to keep it compact: "localhost:3000/" reads better than
-		// "http://localhost:3000/"). Cosmetic only.
+		safeUpstream := htmlEsc.Replace(previewURL)         // header title + open-in-new-tab
+		safeFrame := htmlEsc.Replace(previewFrameURL)       // iframe src
+		// displayURL is the muted text strip — show the UPSTREAM (what's
+		// actually being previewed), scheme-stripped for compactness.
 		display := previewURL
 		for _, prefix := range []string{"https://", "http://"} {
 			if strings.HasPrefix(display, prefix) {
@@ -168,25 +174,21 @@ func renderIndex(html, previewURL, terminalURL string) string {
 			}
 		}
 		safeDisplay := htmlEsc.Replace(display)
-		// Header strip with refresh button, open-in-new-tab link, and a
-		// muted URL display. Rendered only when a URL is configured —
-		// when not, we show the fallback message and skip the strip.
-		//
-		// The URL DISPLAY + open-in-new-tab link still use the absolute
-		// URL (so the user knows what they're previewing and can pop it
-		// open in a clean tab). The IFRAME src, however, is the relative
-		// /preview/ path — same-origin with the chat UI, so the browser
-		// doesn't apply the upstream's X-Frame-Options / CSP
-		// frame-ancestors headers (which the proxy strips anyway). Per
-		// ARD-0031 §1.
+		// The URL display + open-in-new-tab link use the UPSTREAM URL (so the
+		// user sees/opens the real dev server in a clean tab — a top-level tab
+		// isn't subject to X-Frame-Options). The IFRAME src is the dedicated
+		// preview-proxy origin, which strips the upstream's X-Frame-Options /
+		// CSP frame-ancestors so it frames cleanly, and — being served at its
+		// own origin root — lets the upstream's root-absolute asset URLs
+		// (/cdn/..., /checkouts/...) resolve back into the proxy (ARD-0033).
 		pane = `<div class="preview-header">` +
-			`<span class="preview-url" title="` + safe + `">` + safeDisplay + `</span>` +
+			`<span class="preview-url" title="` + safeUpstream + `">` + safeDisplay + `</span>` +
 			`<div class="preview-actions">` +
 			`<button type="button" class="preview-btn" id="preview-refresh" title="Reload preview">↻</button>` +
-			`<a class="preview-btn" id="preview-open" href="` + safe + `" target="_blank" rel="noopener noreferrer" title="Open in new tab">↗</a>` +
+			`<a class="preview-btn" id="preview-open" href="` + safeUpstream + `" target="_blank" rel="noopener noreferrer" title="Open in new tab">↗</a>` +
 			`</div>` +
 			`</div>` +
-			`<iframe id="preview-iframe" src="/preview/" title="preview"></iframe>`
+			`<iframe id="preview-iframe" src="` + safeFrame + `" title="preview"></iframe>`
 	} else {
 		pane = `<div id="preview-fallback" class="preview-fallback">` +
 			`<p>No preview configured for this project.</p>` +

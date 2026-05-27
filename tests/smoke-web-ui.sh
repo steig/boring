@@ -124,6 +124,26 @@ case "$p_other" in
   *)           pass "second slug port is numeric ($p_other)" ;;
 esac
 
+# web_ui_preview_port (ARD-0033): deterministic per slug, range [8700, 9199],
+# and must NOT collide with the ttyd port for the same slug.
+pv1="$(web_ui_preview_port "alpha")"
+pv2="$(web_ui_preview_port "alpha")"
+[[ "$pv1" == "$pv2" ]] \
+  && pass "preview port deterministic ($pv1)" \
+  || fail "preview port drifted: $pv1 vs $pv2"
+case "$pv1" in
+  ''|*[!0-9]*) fail "preview port not numeric: $pv1" ;;
+  *)
+    if [[ "$pv1" -ge 8700 && "$pv1" -le 9199 ]]; then
+      pass "preview port in [8700, 9199] ($pv1)"
+    else
+      fail "preview port out of documented range [8700, 9199]: $pv1"
+    fi ;;
+esac
+[[ "$pv1" != "$p1" ]] \
+  && pass "preview port ($pv1) distinct from ttyd port ($p1) for same slug" \
+  || fail "preview port collides with ttyd port: $pv1"
+
 # ============================================================================
 # Test 4: web_ui_url returns the expected shape
 # ============================================================================

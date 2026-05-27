@@ -80,6 +80,27 @@ func TestIndexPreviewFallbackWhenURLEmpty(t *testing.T) {
 	}
 }
 
+func TestIndexPaneControlsPresent(t *testing.T) {
+	// The resize gutter and the two collapse toggles are static markup (bound
+	// in chat.js), so they must render regardless of preview/terminal config.
+	_, srv := newTestServer(t, false)
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{
+		`id="pane-gutter"`,
+		`id="toggle-left"`,
+		`id="toggle-preview"`,
+	} {
+		if !bytes.Contains(body, []byte(want)) {
+			t.Errorf("expected pane control %s in index; got %s", want, string(body[:min(600, len(body))]))
+		}
+	}
+}
+
 func TestIndexPreviewIframeWhenURLSet(t *testing.T) {
 	dir := t.TempDir()
 	th, err := NewThread(dir, "test")
@@ -90,6 +111,9 @@ func TestIndexPreviewIframeWhenURLSet(t *testing.T) {
 	t.Cleanup(b.Close)
 	s := NewServer("test", t.TempDir(), "http://localhost:3000/", "", "mock", nil, b, th)
 	s.SaveCmd = nil
+	// ARD-0033: the iframe loads the dedicated preview-proxy origin. Both the
+	// upstream URL and the frame URL must be set for the iframe to render.
+	s.PreviewFrameURL = "http://127.0.0.1:8765/"
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -102,22 +126,31 @@ func TestIndexPreviewIframeWhenURLSet(t *testing.T) {
 	if bytes.Contains(body, []byte("{{PREVIEW_PANE}}")) {
 		t.Errorf("template marker not substituted: %s", string(body[:min(400, len(body))]))
 	}
-	// Per ARD-0031: iframe src is the relative /preview/ path (same-origin),
-	// not the absolute URL. The header strip (asserted in
-	// TestIndexPreviewHeaderRendersWhenURLSet) still surfaces the absolute
-	// URL so the user knows what's being proxied.
-	want := `src="/preview/"`
+	// Per ARD-0033: the iframe src is the dedicated preview-proxy origin
+	// (PreviewFrameURL) — an absolute URL on its own port, NOT the upstream and
+	// NOT a sub-path. Serving the preview at its own origin root is what lets
+	// the upstream's root-absolute asset URLs (/cdn/...) resolve.
+	want := `src="http://127.0.0.1:8765/"`
 	if !bytes.Contains(body, []byte(want)) {
 		t.Errorf("expected iframe %s; got %s", want, string(body[:min(400, len(body))]))
 	}
 	if !bytes.Contains(body, []byte(`id="preview-iframe"`)) {
 		t.Errorf("expected iframe id=preview-iframe; got %s", string(body[:min(400, len(body))]))
 	}
-	// The absolute URL should NOT appear as the iframe src (would defeat
-	// the same-origin-via-proxy design).
-	if bytes.Contains(body, []byte(`src="http://localhost:3000/"`)) {
-		t.Errorf("iframe still has absolute src; expected relative /preview/. body: %s",
+	// Guard against the superseded sub-path designs regressing.
+	if bytes.Contains(body, []byte(`src="preview/"`)) || bytes.Contains(body, []byte(`src="/preview/"`)) {
+		t.Errorf("iframe uses a stale sub-path src; expected the dedicated-origin frame URL. body: %s",
 			string(body[:min(400, len(body))]))
+	}
+	// The UPSTREAM URL must NOT be the iframe src, but SHOULD appear in the
+	// header strip (title + open-in-new-tab link) so the user sees/opens it.
+	if bytes.Contains(body, []byte(`src="http://localhost:3000/"`)) {
+		t.Errorf("iframe src is the upstream; expected the preview-proxy frame URL. body: %s",
+			string(body[:min(400, len(body))]))
+	}
+	if !bytes.Contains(body, []byte(`http://localhost:3000/`)) {
+		t.Errorf("upstream URL should still appear in the header strip; body: %s",
+			string(body[:min(800, len(body))]))
 	}
 	if bytes.Contains(body, []byte("No preview configured")) {
 		t.Errorf("fallback copy leaked through when URL was set")
@@ -136,6 +169,7 @@ func TestIndexPreviewHeaderRendersWhenURLSet(t *testing.T) {
 	t.Cleanup(b.Close)
 	s := NewServer("test", t.TempDir(), "http://localhost:3000/", "", "mock", nil, b, th)
 	s.SaveCmd = nil
+	s.PreviewFrameURL = "http://127.0.0.1:8765/" // ARD-0033: required for the pane to render
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -193,6 +227,7 @@ func TestIndexPreviewURLEscaped(t *testing.T) {
 	t.Cleanup(b.Close)
 	s := NewServer("test", t.TempDir(), `http://x/"><script>alert(1)</script>`, "", "mock", nil, b, th)
 	s.SaveCmd = nil
+	s.PreviewFrameURL = "http://127.0.0.1:8765/" // ARD-0033: required for the pane (with the malicious upstream) to render
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 

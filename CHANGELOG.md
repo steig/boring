@@ -4,7 +4,22 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.11.0` — `boring secret` local keyring provisioning for zero-auth non-engineer launches (ARD-0032).
+VERSION is `0.12.0` — preview iframe on a dedicated origin so Shopify-style root-absolute asset URLs resolve (ARD-0033), plus resizable/collapsible boring-ui panes.
+
+## [0.12.0] — 2026-05-26
+
+### Changed
+
+- **Preview iframe now loads a dedicated-origin reverse proxy, not a same-origin sub-path (ARD-0033, supersedes ARD-0031 §1).** `boring-ui-backend` starts a second HTTP listener on a deterministic per-slug host port (`--preview-port`, range `8700..9199` via `web_ui_preview_port`) that reverse-proxies **at root** to `--preview-url`, stripping `X-Frame-Options` + CSP `frame-ancestors` on every response. The right-pane iframe `src` is now the absolute `http://127.0.0.1:<preview-port>/`.
+  - **Why:** end-to-end testing against a real Shopify theme dev server (`shopify theme dev` on `:9292`) showed the storefront references every asset with **root-absolute** URLs (`/cdn/...`, `/checkouts/...`, `/web-pixels@.../`). Under the old `/<slug>/preview/` sub-path those escaped the prefix, hit the host proxy root, and 404'd as `text/plain` with `frame-ancestors 'none'` — producing a wall of MIME ("Refused to apply style/execute script") and framing errors and a blank/broken preview. A `<base href>` can't fix root-absolute URLs; serving the preview at its own origin root makes them resolve back into the proxy. (`:9292` sets `X-Frame-Options: DENY`, so stripping via a proxy is still required — we can't iframe it directly.)
+  - The header strip's URL display + open-in-new-tab link continue to show/open the **upstream** URL; only the iframe target moved to the dedicated origin.
+  - The backend `/preview/*` sub-path route is removed. WebSocket upgrade + query strings are preserved (HMR / Shopify theme hot-reload keep working). A preview-port bind collision logs a warning and disables the preview without taking down the chat UI.
+  - **Known trade-off:** the preview iframe is now cross-origin to the chat UI, so upstream `SameSite=Lax`/`Strict` cookies aren't sent on in-iframe subrequests (cart/session may not persist across navigations). Acceptable for a dev preview; unavoidable given root-absolute upstream URLs. See ARD-0033.
+
+### Added
+
+- **Resizable + collapsible boring-ui panes.** A draggable divider between the left and right panes (pointer-capture so the drag survives crossing the iframes; Arrow-Left/Right nudge when focused), plus header toggles to hide the left pane (`◧`) or the preview (`◨`) — at most one collapsed at a time. Layout (split ratio + which pane is hidden) persists per project in `localStorage`. Works identically whether the left pane is the chat thread or the `--terminal-url` terminal iframe. (`assets/index.html`, `assets/chat.css`, `assets/chat.js`.)
+- **Preview address bar tracks in-frame navigation.** As you click around the previewed app, the header URL + open-in-new-tab link update to the current page. Because the preview is now a separate origin (ARD-0033), the chat UI can't read the iframe's location directly, so the preview proxy injects a tiny same-origin script (`/__boring_nav.js`) into proxied HTML that `postMessage`s the current path up to the chat UI, which maps it onto the upstream URL for display. Only the **top** preview frame reports (`window.parent === window.top`), so Shopify's nested web-pixel/analytics sandbox iframes don't pollute the bar. To inject reliably the proxy strips `Accept-Encoding` outbound (Go's transport then transparently decompresses) and, defensively, allows `'self'` in any upstream `script-src`. Catches full page loads + history (`pushState`/`popstate`/`hashchange`) navigations.
 
 ## [0.11.0] — 2026-05-26
 

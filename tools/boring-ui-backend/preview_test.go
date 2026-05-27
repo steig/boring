@@ -14,12 +14,14 @@ package main
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -153,38 +155,43 @@ func TestRemoveFrameAncestorsDirective_DoesNotMatchSubstring(t *testing.T) {
 	}
 }
 
-// --- handlePreview integration tests ----------------------------------------
+// --- preview proxy integration tests (root-mounted, ARD-0033) ---------------
 
-// newPreviewBackend builds a Server whose PreviewURL points at the given
-// upstream (httptest.Server URL), and returns the wrapped httptest.Server.
-func newPreviewBackend(t *testing.T, previewURL string) *httptest.Server {
+// newPreviewProxy builds an httptest.Server wrapping the root-mounted preview
+// reverse proxy for the given upstream URL. The handler is what runs on the
+// dedicated preview origin in production (a separate http.Server in main.go).
+func newPreviewProxy(t *testing.T, previewURL string) *httptest.Server {
 	t.Helper()
-	dir := t.TempDir()
-	th, err := NewThread(dir, "preview-test")
+	h, err := newPreviewProxyHandler(previewURL)
 	if err != nil {
-		t.Fatalf("NewThread: %v", err)
+		t.Fatalf("newPreviewProxyHandler(%q): %v", previewURL, err)
 	}
-	b := NewBroadcaster()
-	s := NewServer("preview-test", t.TempDir(), previewURL, "", "mock", nil, b, th)
-	s.SaveCmd = nil
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(func() {
-		srv.Close()
-		b.Close()
-	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
 	return srv
 }
 
-func TestHandlePreview_ProxiesToUpstream(t *testing.T) {
+func TestPreviewProxy_EmptyURLErrors(t *testing.T) {
+	// main.go only starts the preview listener when PreviewURL is non-empty;
+	// the handler constructor enforces that contract.
+	if _, err := newPreviewProxyHandler(""); err == nil {
+		t.Error("expected error for empty preview URL, got nil")
+	}
+	if _, err := newPreviewProxyHandler("   "); err == nil {
+		t.Error("expected error for whitespace-only preview URL, got nil")
+	}
+}
+
+func TestPreviewProxy_ProxiesToUpstream(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "Hello from upstream")
 	}))
 	defer upstream.Close()
 
-	proxy := newPreviewBackend(t, upstream.URL)
-	resp, err := http.Get(proxy.URL + "/preview/")
+	proxy := newPreviewProxy(t, upstream.URL)
+	resp, err := http.Get(proxy.URL + "/")
 	if err != nil {
-		t.Fatalf("GET /preview/: %v", err)
+		t.Fatalf("GET /: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -196,7 +203,7 @@ func TestHandlePreview_ProxiesToUpstream(t *testing.T) {
 	}
 }
 
-func TestHandlePreview_StripsFrameOptionsEndToEnd(t *testing.T) {
+func TestPreviewProxy_StripsFrameOptionsEndToEnd(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy",
@@ -205,10 +212,10 @@ func TestHandlePreview_StripsFrameOptionsEndToEnd(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := newPreviewBackend(t, upstream.URL)
-	resp, err := http.Get(proxy.URL + "/preview/")
+	proxy := newPreviewProxy(t, upstream.URL)
+	resp, err := http.Get(proxy.URL + "/")
 	if err != nil {
-		t.Fatalf("GET /preview/: %v", err)
+		t.Fatalf("GET /: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -224,23 +231,115 @@ func TestHandlePreview_StripsFrameOptionsEndToEnd(t *testing.T) {
 	}
 }
 
-func TestHandlePreview_404WhenNoPreviewURL(t *testing.T) {
-	proxy := newPreviewBackend(t, "") // empty PreviewURL
-	resp, err := http.Get(proxy.URL + "/preview/")
+func TestPreviewProxy_ServesNavScript(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream should not be hit for the nav-script path")
+	}))
+	defer upstream.Close()
+
+	proxy := newPreviewProxy(t, upstream.URL)
+	resp, err := http.Get(proxy.URL + "/__boring_nav.js")
 	if err != nil {
-		t.Fatalf("GET /preview/: %v", err)
+		t.Fatalf("GET nav script: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("status=%d want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status=%d want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Errorf("content-type=%q want javascript", ct)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "no preview configured") {
-		t.Errorf("body=%q want containing %q", string(body), "no preview configured")
+	// The script identifies itself with the postMessage source marker and
+	// guards against nested sub-iframes reporting.
+	if !strings.Contains(string(body), "boring-preview") {
+		t.Errorf("nav script missing source marker; got %q", string(body))
+	}
+	if !strings.Contains(string(body), "window.top") {
+		t.Errorf("nav script missing top-frame guard; got %q", string(body))
 	}
 }
 
-func TestHandlePreview_502OnUpstreamUnreachable(t *testing.T) {
+func TestPreviewProxy_InjectsNavScriptIntoHTML(t *testing.T) {
+	const html = "<!doctype html><html><head><title>x</title></head><body>hi</body></html>"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, html)
+	}))
+	defer upstream.Close()
+
+	proxy := newPreviewProxy(t, upstream.URL)
+	resp, err := http.Get(proxy.URL + "/")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	// Injected, and placed immediately before </head>.
+	if !strings.Contains(string(body), `<script src="/__boring_nav.js"></script></head>`) {
+		t.Errorf("nav script not injected before </head>; got %q", string(body))
+	}
+	// Content-Length must reflect the grown body or the client truncates/hangs.
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		if n, _ := strconv.Atoi(cl); n != len(body) {
+			t.Errorf("Content-Length=%s but body is %d bytes", cl, len(body))
+		}
+	}
+}
+
+func TestPreviewProxy_DoesNotInjectIntoNonHTML(t *testing.T) {
+	const css = "body{color:red}"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/css")
+		_, _ = io.WriteString(w, css)
+	}))
+	defer upstream.Close()
+
+	proxy := newPreviewProxy(t, upstream.URL)
+	resp, err := http.Get(proxy.URL + "/theme.css")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != css {
+		t.Errorf("non-HTML body was altered: got %q want %q", string(body), css)
+	}
+}
+
+// TestPreviewProxy_InjectsIntoGzippedUpstream proves the Accept-Encoding strip
+// works end-to-end: we delete the client's Accept-Encoding so the Go transport
+// takes over (re-adds gzip + transparently decompresses), leaving an identity
+// body at ModifyResponse time that we can inject into — even when the upstream
+// gzips its response.
+func TestPreviewProxy_InjectsIntoGzippedUpstream(t *testing.T) {
+	const html = "<!doctype html><head></head><body>hi</body>"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			_, _ = gz.Write([]byte(html))
+			_ = gz.Close()
+			return
+		}
+		_, _ = io.WriteString(w, html)
+	}))
+	defer upstream.Close()
+
+	proxy := newPreviewProxy(t, upstream.URL)
+	resp, err := http.Get(proxy.URL + "/")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "/__boring_nav.js") {
+		t.Errorf("nav script not injected into transparently-decompressed gzip upstream; got %q", string(body))
+	}
+}
+
+func TestPreviewProxy_502OnUpstreamUnreachable(t *testing.T) {
 	// Bind + immediately close a socket to grab a port nothing is listening
 	// on. Using port 1 (often unbound) is unreliable on macOS — this is
 	// deterministic.
@@ -251,10 +350,10 @@ func TestHandlePreview_502OnUpstreamUnreachable(t *testing.T) {
 	deadAddr := ln.Addr().String()
 	ln.Close() // port is now free; subsequent connects fail with ECONNREFUSED
 
-	proxy := newPreviewBackend(t, "http://"+deadAddr)
-	resp, err := http.Get(proxy.URL + "/preview/")
+	proxy := newPreviewProxy(t, "http://"+deadAddr)
+	resp, err := http.Get(proxy.URL + "/")
 	if err != nil {
-		t.Fatalf("GET /preview/: %v", err)
+		t.Fatalf("GET /: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
@@ -266,35 +365,43 @@ func TestHandlePreview_502OnUpstreamUnreachable(t *testing.T) {
 	}
 }
 
-func TestHandlePreview_StripsPathPrefix(t *testing.T) {
-	gotPath := make(chan string, 1)
+// TestPreviewProxy_PassesPathAndQueryThrough is the crux of ARD-0033: because
+// the proxy is mounted at root (no prefix to strip), an inbound root-absolute
+// path like /cdn/shop/assets/theme.css?v=1 reaches the upstream verbatim. This
+// is exactly what lets Shopify's root-absolute asset URLs resolve.
+func TestPreviewProxy_PassesPathAndQueryThrough(t *testing.T) {
+	type seen struct {
+		path string
+		raw  string
+	}
+	got := make(chan seen, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath <- r.URL.Path
+		got <- seen{path: r.URL.Path, raw: r.URL.RawQuery}
 		_, _ = io.WriteString(w, "ok")
 	}))
 	defer upstream.Close()
 
-	proxy := newPreviewBackend(t, upstream.URL)
-	resp, err := http.Get(proxy.URL + "/preview/foo/bar")
+	proxy := newPreviewProxy(t, upstream.URL)
+	resp, err := http.Get(proxy.URL + "/cdn/shop/t/144/assets/theme.css?v=12345&width=32")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
 	resp.Body.Close()
 
 	select {
-	case p := <-gotPath:
-		if p != "/foo/bar" {
-			t.Errorf("upstream saw path %q want %q", p, "/foo/bar")
+	case s := <-got:
+		if s.path != "/cdn/shop/t/144/assets/theme.css" {
+			t.Errorf("upstream saw path %q want %q", s.path, "/cdn/shop/t/144/assets/theme.css")
+		}
+		if s.raw != "v=12345&width=32" {
+			t.Errorf("upstream saw query %q want %q", s.raw, "v=12345&width=32")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("upstream never received request")
 	}
 }
 
-func TestHandlePreview_StripsPathPrefix_RootPreview(t *testing.T) {
-	// /preview alone (no trailing slash, no subpath) should become "/" at
-	// the upstream — TrimPrefix of "/preview" gives "", which our handler
-	// promotes to "/".
+func TestPreviewProxy_RootPathPassesThrough(t *testing.T) {
 	gotPath := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath <- r.URL.Path
@@ -302,8 +409,8 @@ func TestHandlePreview_StripsPathPrefix_RootPreview(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := newPreviewBackend(t, upstream.URL)
-	resp, err := http.Get(proxy.URL + "/preview")
+	proxy := newPreviewProxy(t, upstream.URL)
+	resp, err := http.Get(proxy.URL + "/")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -319,7 +426,7 @@ func TestHandlePreview_StripsPathPrefix_RootPreview(t *testing.T) {
 	}
 }
 
-func TestHandlePreview_HostHeaderRewritten(t *testing.T) {
+func TestPreviewProxy_HostHeaderRewritten(t *testing.T) {
 	// Upstream observes its own Host (target.Host), not the proxy's Host.
 	// Real-world relevance: Shopify storefronts vhost-route on Host.
 	gotHost := make(chan string, 1)
@@ -336,8 +443,8 @@ func TestHandlePreview_HostHeaderRewritten(t *testing.T) {
 	}
 	wantHost := u.Host
 
-	proxy := newPreviewBackend(t, upstream.URL)
-	resp, err := http.Get(proxy.URL + "/preview/")
+	proxy := newPreviewProxy(t, upstream.URL)
+	resp, err := http.Get(proxy.URL + "/")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -353,7 +460,7 @@ func TestHandlePreview_HostHeaderRewritten(t *testing.T) {
 	}
 }
 
-// TestHandlePreview_WebSocketUpgrade verifies the HTTP-layer Upgrade handshake
+// TestPreviewProxy_WebSocketUpgrade verifies the HTTP-layer Upgrade handshake
 // is forwarded end-to-end through the reverse proxy. We hijack the connection
 // on the upstream side, echo the handshake response, then verify the client
 // receives the 101 + the expected headers and can exchange raw bytes.
@@ -362,8 +469,8 @@ func TestHandlePreview_HostHeaderRewritten(t *testing.T) {
 // the HTTP Upgrade layer, not the WS framing layer. If the Upgrade handshake
 // crosses correctly and bytes flow bidirectionally, httputil.ReverseProxy is
 // doing its job — the upstream's actual WS framing is the application's
-// concern, not ours.
-func TestHandlePreview_WebSocketUpgrade(t *testing.T) {
+// concern, not ours. (Shopify theme hot-reload relies on this.)
+func TestPreviewProxy_WebSocketUpgrade(t *testing.T) {
 	const upstreamGreeting = "upstream-says-hi"
 	const clientGreeting = "client-says-hi"
 
@@ -415,7 +522,7 @@ func TestHandlePreview_WebSocketUpgrade(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := newPreviewBackend(t, upstream.URL)
+	proxy := newPreviewProxy(t, upstream.URL)
 
 	// Dial the proxy directly (we need a raw TCP connection so we can drive
 	// the Upgrade handshake by hand — http.Client can't do this cleanly).
@@ -430,9 +537,9 @@ func TestHandlePreview_WebSocketUpgrade(t *testing.T) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 
-	// Send a minimally-valid WebSocket Upgrade request.
+	// Send a minimally-valid WebSocket Upgrade request (root-mounted path).
 	req := strings.Join([]string{
-		"GET /preview/ws HTTP/1.1",
+		"GET /ws HTTP/1.1",
 		"Host: " + proxyURL.Host,
 		"Upgrade: websocket",
 		"Connection: Upgrade",
@@ -473,32 +580,10 @@ func TestHandlePreview_WebSocketUpgrade(t *testing.T) {
 	}
 }
 
-// TestHandlePreview_RouteIsRegistered confirms the mux actually routes
-// /preview/ to handlePreview (regression guard: someone could remove the
-// mount line and tests that hit the upstream via the proxy would all 404
-// rather than fail informatively).
-func TestHandlePreview_RouteIsRegistered(t *testing.T) {
-	proxy := newPreviewBackend(t, "") // PreviewURL empty → handler returns 404 "no preview configured"
-	// If the route weren't registered, we'd get the index page (which falls
-	// through to /). The 404-with-specific-body confirms the route mounted.
-	resp, err := http.Get(proxy.URL + "/preview/")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(body), "no preview configured") {
-		t.Errorf("expected route-registered 404; got status=%d body=%q",
-			resp.StatusCode, string(body))
-	}
-}
-
-// --- guard: ensure we don't shadow this on context cancel ------------------
-
-// TestHandlePreview_RespectsClientCancel — a slow upstream + cancelled client
+// TestPreviewProxy_RespectsClientCancel — a slow upstream + cancelled client
 // must abort the in-flight request rather than blocking forever. Race-detector
 // loves this kind of test.
-func TestHandlePreview_RespectsClientCancel(t *testing.T) {
+func TestPreviewProxy_RespectsClientCancel(t *testing.T) {
 	upstreamDone := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -509,9 +594,9 @@ func TestHandlePreview_RespectsClientCancel(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := newPreviewBackend(t, upstream.URL)
+	proxy := newPreviewProxy(t, upstream.URL)
 	ctx, cancel := context.WithCancel(context.Background())
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, proxy.URL+"/preview/", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, proxy.URL+"/", nil)
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		cancel()

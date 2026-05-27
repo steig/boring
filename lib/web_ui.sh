@@ -115,6 +115,21 @@ web_ui_ttyd_port() {
   printf '%d' $(( 7681 + (sum % 999) ))
 }
 
+# web_ui_preview_port <slug>
+# Deterministic per-slug port for the dedicated-origin preview reverse proxy
+# (ARD-0033). The browser hits http://127.0.0.1:<this>/ for the right-pane
+# iframe; the backend binds it and forwards to --preview-url with frame-blocking
+# headers stripped. Range 8700..9199 — clear of the ttyd range (7681..8679),
+# the singleton proxy (8090), Shopify dev (9292), and common dev ports
+# (3000/5173/8080). Same slug always maps to the same port so re-runs are stable.
+web_ui_preview_port() {
+  local slug="$1"
+  [[ -z "$slug" ]] && die "web_ui_preview_port: missing slug"
+  local sum
+  sum="$(printf '%s' "$slug" | cksum | awk '{print $1}')"
+  printf '%d' $(( 8700 + (sum % 500) ))
+}
+
 # ----------------------------------------------------------------------------
 # Proxy (singleton across all slugs)
 # ----------------------------------------------------------------------------
@@ -372,7 +387,15 @@ web_ui_backend_start() {
 
   local terminal_url="http://127.0.0.1:$ttyd_port/"
 
-  log_step "Starting boring-ui-backend (socket $socket, terminal $terminal_url)"
+  # Dedicated-origin preview proxy port (ARD-0033). The backend binds
+  # 127.0.0.1:<preview_port> and reverse-proxies it to --preview-url with
+  # frame-blocking headers stripped; the right-pane iframe loads that origin so
+  # the upstream's root-absolute asset URLs resolve. Allocated even when
+  # preview_url is empty (the backend simply won't start the listener then).
+  local preview_port
+  preview_port="$(web_ui_preview_port "$slug")"
+
+  log_step "Starting boring-ui-backend (socket $socket, terminal $terminal_url, preview :$preview_port)"
   # --provider claude: per ARD-0029 the v0 backend shells out to claude.
   # The container_name arg is currently informational — the backend itself
   # doesn't docker-exec (ttyd does); pass it via env for future use.
@@ -384,6 +407,7 @@ web_ui_backend_start() {
       --provider claude \
       --terminal-url "$terminal_url" \
       --preview-url "$preview_url" \
+      --preview-port "$preview_port" \
       >>"$logfile" 2>&1 </dev/null & echo $! >"$pidfile" ) &
   sleep 1
   local pid
