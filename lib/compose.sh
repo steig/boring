@@ -589,7 +589,10 @@ EOF
     # Leading newline so the first sidecar is visually separated from the dev
     # block — non-functional but easier to scan.
     echo
-    [[ -n "$sidecars_block" ]] && printf '%s' "$sidecars_block"
+    # `$(...)` strips the trailing newline from sidecars_block, so re-add one
+    # or the egress-logger block gets glued onto the last sidecar line (e.g.
+    # `retries: 10  egress-logger:`) → invalid compose YAML.
+    [[ -n "$sidecars_block" ]] && printf '%s\n' "$sidecars_block"
     [[ -n "$egress_logger_sidecar_block" ]] && printf '%s' "$egress_logger_sidecar_block"
   fi
   if [[ -n "$top_volumes_block" ]]; then
