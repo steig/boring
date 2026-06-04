@@ -4,7 +4,11 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
-VERSION is `0.12.0` — preview iframe on a dedicated origin so Shopify-style root-absolute asset URLs resolve (ARD-0033), plus resizable/collapsible boring-ui panes.
+## [0.12.1] — 2026-06-04
+
+### Fixed
+
+- **`compose.sh`: newline between a user `services:` sidecar and the egress-logger block.** `sidecars_block` comes from `$(...)`, which strips its trailing newline, so the egress-logger block was glued onto the last sidecar line (e.g. `retries: 10  egress-logger:`) — producing invalid `docker-compose.yml` whenever a profile declared both a `services:` sidecar and `egress:`, failing `docker compose config` / `devcontainer up` at generation. (#2)
 
 ## [0.12.0] — 2026-05-26
 
