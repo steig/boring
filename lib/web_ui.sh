@@ -130,6 +130,40 @@ web_ui_preview_port() {
   printf '%d' $(( 8700 + (sum % 500) ))
 }
 
+# web_ui_preview_urls_arg <slug> <name=upstream,name=upstream,...>
+# Builds the boring-ui-backend --preview-urls value for multiple preview tabs
+# (ARD-0035): allocates a deterministic, collision-free dedicated-origin proxy
+# port per tab (8700..9199, hash of "slug:name", linear-probe on dup) and echoes
+# "name=port=upstream,name=port=upstream". The upstream keeps any '=' (we split
+# the input pair on only the first '='); URLs must not contain ',' (the tab
+# separator). Empty input -> empty output (no preview).
+web_ui_preview_urls_arg() {
+  local slug="$1" tabs="$2"
+  [[ -z "$slug" ]] && die "web_ui_preview_urls_arg: missing slug"
+  [[ -z "$tabs" ]] && { printf ''; return 0; }
+  local out="" used=" " pair name upstream sum port
+  # Read one tab per line (commas → newlines) to avoid fragile IFS juggling.
+  # `|| [[ -n "$pair" ]]` catches the final entry (no trailing newline).
+  while IFS= read -r pair || [[ -n "$pair" ]]; do
+    # Trim surrounding whitespace.
+    pair="${pair#"${pair%%[![:space:]]*}"}"
+    pair="${pair%"${pair##*[![:space:]]}"}"
+    [[ -z "$pair" || "$pair" != *"="* ]] && continue
+    name="${pair%%=*}"
+    upstream="${pair#*=}"
+    [[ -z "$name" || -z "$upstream" ]] && continue
+    sum="$(printf '%s' "$slug:$name" | cksum | awk '{print $1}')"
+    port=$(( 8700 + (sum % 500) ))
+    while [[ "$used" == *" $port "* ]]; do
+      port=$(( port + 1 )); [[ $port -gt 9199 ]] && port=8700
+    done
+    used="$used$port "
+    [[ -n "$out" ]] && out="$out,"
+    out="$out$name=$port=$upstream"
+  done < <(printf '%s' "$tabs" | tr ',' '\n')
+  printf '%s' "$out"
+}
+
 # ----------------------------------------------------------------------------
 # Proxy (singleton across all slugs)
 # ----------------------------------------------------------------------------
@@ -349,12 +383,14 @@ web_ui_ttyd_start() {
 # ----------------------------------------------------------------------------
 # Backend: per-project boring-ui-backend on Unix socket
 # ----------------------------------------------------------------------------
-# web_ui_backend_start <boring-root> <slug> <repo_path> <ttyd_port> <preview_url> <container_name>
-# NOTE: --workdir is the repo path on the HOST. The backend runs on the host;
-# the bind-mount inside the dev container is what makes /workspace visible to
-# claude in the container. The terminal pane is just the ttyd URL.
+# web_ui_backend_start <boring-root> <slug> <repo_path> <ttyd_port> <preview_tabs> <container_name>
+# <preview_tabs> is a comma-separated name=upstream list (ARD-0035 preview tabs);
+# a single "default=<url>" is the back-compat single-preview case; empty disables
+# the preview pane. NOTE: --workdir is the repo path on the HOST. The backend
+# runs on the host; the bind-mount inside the dev container is what makes
+# /workspace visible to claude in the container. The terminal pane is the ttyd URL.
 web_ui_backend_start() {
-  local boring_root="$1" slug="$2" repo_path="$3" ttyd_port="$4" preview_url="$5" container_name="$6"
+  local boring_root="$1" slug="$2" repo_path="$3" ttyd_port="$4" preview_tabs="$5" container_name="$6"
   [[ -z "$boring_root" ]] && die "web_ui_backend_start: missing boring-root"
   [[ -z "$slug" ]] && die "web_ui_backend_start: missing slug"
   [[ -z "$repo_path" ]] && die "web_ui_backend_start: missing repo_path"
@@ -387,27 +423,31 @@ web_ui_backend_start() {
 
   local terminal_url="http://127.0.0.1:$ttyd_port/"
 
-  # Dedicated-origin preview proxy port (ARD-0033). The backend binds
-  # 127.0.0.1:<preview_port> and reverse-proxies it to --preview-url with
-  # frame-blocking headers stripped; the right-pane iframe loads that origin so
-  # the upstream's root-absolute asset URLs resolve. Allocated even when
-  # preview_url is empty (the backend simply won't start the listener then).
-  local preview_port
-  preview_port="$(web_ui_preview_port "$slug")"
+  # Dedicated-origin preview proxies (ARD-0033 + ARD-0035 tabs). One proxy per
+  # declared tab, each on its own host port (8700..9199); the backend binds them
+  # and strips frame-blocking headers so each tab's iframe loads its proxy origin
+  # and the upstream's root-absolute asset URLs resolve. Empty -> no preview.
+  local preview_urls_arg
+  preview_urls_arg="$(web_ui_preview_urls_arg "$slug" "$preview_tabs")"
 
-  log_step "Starting boring-ui-backend (socket $socket, terminal $terminal_url, preview :$preview_port)"
+  # Conditional flags: only pass --preview-urls when there's at least one tab.
+  local -a backend_args=(
+    --socket "$socket"
+    --slug "$slug"
+    --workdir "$repo_path"
+    --provider claude
+    --terminal-url "$terminal_url"
+  )
+  if [[ -n "$preview_urls_arg" ]]; then
+    backend_args+=(--preview-urls "$preview_urls_arg")
+  fi
+
+  log_step "Starting boring-ui-backend (socket $socket, terminal $terminal_url, preview-tabs: ${preview_urls_arg:-none})"
   # --provider claude: per ARD-0029 the v0 backend shells out to claude.
   # The container_name arg is currently informational — the backend itself
   # doesn't docker-exec (ttyd does); pass it via env for future use.
   ( BORING_UI_CONTAINER="$container_name" \
-    nohup "$bin" \
-      --socket "$socket" \
-      --slug "$slug" \
-      --workdir "$repo_path" \
-      --provider claude \
-      --terminal-url "$terminal_url" \
-      --preview-url "$preview_url" \
-      --preview-port "$preview_port" \
+    nohup "$bin" "${backend_args[@]}" \
       >>"$logfile" 2>&1 </dev/null & echo $! >"$pidfile" ) &
   sleep 1
   local pid

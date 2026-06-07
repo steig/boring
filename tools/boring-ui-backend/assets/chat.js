@@ -596,68 +596,221 @@
     }
   });
 
-  // --- Preview header (only present when --preview-url was set) ---------
-
-  // The preview pane is rendered server-side; the refresh button + open link
-  // only exist when a preview URL is configured. Guard everything with
-  // existence checks so the fallback-message case is a clean no-op.
-  const previewRefresh = $("preview-refresh");
-  const previewIframe = $("preview-iframe");
-  if (previewRefresh && previewIframe) {
-    previewRefresh.addEventListener("click", () => {
-      // Reassigning .src forces a full reload that works across same-origin
-      // policies more reliably than contentWindow.location.reload(), which
-      // throws for cross-origin frames.
-      previewIframe.src = previewIframe.src;
-    });
-  }
-
-  // --- Preview address bar: reflect in-frame navigation ------------------
+  // --- Preview tabs + editable address bar (ARD-0035) -------------------
   //
-  // The preview iframe is a different origin (its own proxy port, ARD-0033),
-  // so we can't read its location directly. A script injected into the proxied
-  // HTML (preview.go) postMessages the current path up to us; we map it onto
-  // the UPSTREAM URL for the muted address display + the open-in-new-tab link.
-  // Only the top preview frame posts (nested pixel sandboxes stay silent).
-  if (previewIframe) {
-    let previewOrigin = "";
-    try {
-      previewOrigin = new URL(previewIframe.src, location.href).origin;
-    } catch (e) {
-      /* malformed src — leave the listener inert */
-    }
-    const previewOpen = $("preview-open");
-    const previewUrlEl = document.querySelector(".preview-url");
-    // The open-in-new-tab href is the UPSTREAM URL; use its origin as the base
-    // we map reported paths onto (so the bar shows the real dev-server URL, not
-    // the internal proxy port).
-    let upstreamOrigin = "";
-    if (previewOpen) {
+  // The preview pane renders a tab strip (#preview-tabs) + one pane per
+  // declared tab (#preview-panes > .preview-tab-pane). Each pane's iframe loads
+  // its dedicated-origin proxy (data-frame-url); the header shows/opens the
+  // upstream (data-upstream). The address bar is editable and navigates
+  // SAME-ORIGIN within the tab's proxy — we apply only path+query+hash, so a
+  // typed off-origin host is ignored (containment, ARD-0035). The proxied page
+  // postMessages its path up (preview.go nav script); we route by e.origin to
+  // the matching pane to refresh its bar + open link. Runtime tabs (+ / ×)
+  // clone an existing pane's proxy origin (no new backend port; session-only).
+  (function previewTabs() {
+    const tabsBar = $("preview-tabs");
+    const panesEl = $("preview-panes");
+    if (!tabsBar || !panesEl) return; // no preview configured -> fallback message
+
+    const addBtn = $("preview-tab-add");
+    const STORAGE_KEY = "boring:preview-active:" + location.pathname;
+    const stripScheme = (u) => (u || "").replace(/^https?:\/\//, "");
+    const originOf = (u) => {
       try {
-        upstreamOrigin = new URL(previewOpen.getAttribute("href"), location.href).origin;
+        return new URL(u, location.href).origin;
       } catch (e) {
-        /* no usable upstream base */
+        return "";
+      }
+    };
+
+    // Resolve the same-origin path a user typed. Any host they type is ignored;
+    // we keep only path+query+hash (containment — never proxy off-origin).
+    function typedPath(value, upstream) {
+      value = (value || "").trim();
+      if (value === "") return "/";
+      let u = null;
+      try {
+        u = new URL(value);
+      } catch (e) {
+        try {
+          u = new URL(value, upstream || "http://x/");
+        } catch (e2) {
+          u = null;
+        }
+      }
+      if (!u) return null;
+      return (u.pathname || "/") + u.search + u.hash;
+    }
+
+    function navigate(pane, path) {
+      if (path == null) return;
+      const iframe = pane.querySelector(".preview-iframe");
+      const origin = originOf(pane.getAttribute("data-frame-url"));
+      if (!iframe || !origin) return;
+      iframe.src = origin + (path.charAt(0) === "/" ? path : "/" + path);
+    }
+
+    function activate(paneId) {
+      let found = false;
+      panesEl.querySelectorAll(".preview-tab-pane").forEach((p) => {
+        const on = p.getAttribute("data-pane") === paneId;
+        p.classList.toggle("active", on);
+        if (on) found = true;
+      });
+      if (!found) return;
+      tabsBar.querySelectorAll(".tab").forEach((t) =>
+        t.classList.toggle("active", t.getAttribute("data-pane") === paneId),
+      );
+      try {
+        localStorage.setItem(STORAGE_KEY, paneId);
+      } catch (e) {
+        /* private mode — non-fatal */
       }
     }
+
+    function wirePane(pane) {
+      const iframe = pane.querySelector(".preview-iframe");
+      const refresh = pane.querySelector(".preview-refresh");
+      const addr = pane.querySelector(".preview-url");
+      if (refresh && iframe) {
+        // Reassigning .src forces a reload that works cross-origin (unlike
+        // contentWindow.location.reload(), which throws for foreign frames).
+        refresh.addEventListener("click", () => {
+          iframe.src = iframe.src;
+        });
+      }
+      if (addr) {
+        addr.addEventListener("keydown", (e) => {
+          if (e.key !== "Enter") return;
+          e.preventDefault();
+          navigate(pane, typedPath(addr.value, pane.getAttribute("data-upstream")));
+        });
+      }
+    }
+
+    function wireTab(tab) {
+      tab.addEventListener("click", () => activate(tab.getAttribute("data-pane")));
+      const close = tab.querySelector(".tab-close");
+      if (close) {
+        close.addEventListener("click", (e) => {
+          e.stopPropagation();
+          closeRuntimeTab(tab.getAttribute("data-pane"));
+        });
+      }
+    }
+
+    // Runtime tab: clone the active pane's proxy origin (containment — only an
+    // already-allowed origin, never a new backend proxy). Session-only.
+    let runtimeSeq = 0;
+    function activePane() {
+      return (
+        panesEl.querySelector(".preview-tab-pane.active") ||
+        panesEl.querySelector(".preview-tab-pane")
+      );
+    }
+    function addRuntimeTab() {
+      const src = activePane();
+      if (!src) return;
+      const frameURL = src.getAttribute("data-frame-url");
+      const upstream = src.getAttribute("data-upstream") || "";
+      const origin = originOf(frameURL);
+      if (!frameURL || !origin) return;
+      const paneId = "rt-" + runtimeSeq++;
+
+      const pane = document.createElement("div");
+      pane.className = "preview-tab-pane";
+      pane.setAttribute("data-pane", paneId);
+      pane.setAttribute("data-frame-url", frameURL);
+      pane.setAttribute("data-upstream", upstream);
+      pane.innerHTML =
+        '<div class="preview-header">' +
+        '<input type="text" class="preview-url" spellcheck="false" autocomplete="off" aria-label="preview address">' +
+        '<div class="preview-actions">' +
+        '<button type="button" class="preview-btn preview-refresh" title="Reload preview">↻</button>' +
+        '<a class="preview-btn preview-open" target="_blank" rel="noopener noreferrer" title="Open in new tab">↗</a>' +
+        "</div></div>" +
+        '<iframe class="preview-iframe" title="preview"></iframe>';
+      const addr = pane.querySelector(".preview-url");
+      if (addr) {
+        addr.value = stripScheme(upstream);
+        addr.title = upstream;
+      }
+      const open = pane.querySelector(".preview-open");
+      if (open && upstream) open.setAttribute("href", upstream);
+      pane.querySelector(".preview-iframe").src = origin + "/";
+      panesEl.appendChild(pane);
+      wirePane(pane);
+
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "tab";
+      tab.setAttribute("data-pane", paneId);
+      const label = document.createElement("span");
+      label.textContent = stripScheme(upstream).split("/")[0] || "tab";
+      const close = document.createElement("span");
+      close.className = "tab-close";
+      close.title = "Close tab";
+      close.textContent = "×"; // ×
+      tab.appendChild(label);
+      tab.appendChild(close);
+      if (addBtn) tabsBar.insertBefore(tab, addBtn);
+      else tabsBar.appendChild(tab);
+      wireTab(tab);
+      activate(paneId);
+    }
+    function closeRuntimeTab(paneId) {
+      const tab = tabsBar.querySelector('.tab[data-pane="' + paneId + '"]');
+      const pane = panesEl.querySelector('.preview-tab-pane[data-pane="' + paneId + '"]');
+      const wasActive = pane && pane.classList.contains("active");
+      if (tab) tab.remove();
+      if (pane) pane.remove();
+      if (wasActive) {
+        const first = tabsBar.querySelector(".tab");
+        if (first) activate(first.getAttribute("data-pane"));
+      }
+    }
+
+    // Route nav-reflection messages (preview.go) to the matching pane by origin.
     window.addEventListener("message", (e) => {
-      if (!previewOrigin || e.origin !== previewOrigin) return; // only our preview frame
       const d = e.data;
       if (!d || d.source !== "boring-preview" || typeof d.path !== "string") return;
-      if (!upstreamOrigin) return;
-      let full;
-      try {
-        full = new URL(d.path, upstreamOrigin).href;
-      } catch (e2) {
+      const panes = panesEl.querySelectorAll(".preview-tab-pane");
+      for (let i = 0; i < panes.length; i++) {
+        const pane = panes[i];
+        if (originOf(pane.getAttribute("data-frame-url")) !== e.origin) continue;
+        const upstreamOrigin = originOf(pane.getAttribute("data-upstream"));
+        if (!upstreamOrigin) return;
+        let full;
+        try {
+          full = new URL(d.path, upstreamOrigin).href;
+        } catch (e2) {
+          return;
+        }
+        const addr = pane.querySelector(".preview-url");
+        const open = pane.querySelector(".preview-open");
+        // Don't clobber the field while the user is editing it.
+        if (addr && document.activeElement !== addr) {
+          addr.value = stripScheme(full);
+          addr.title = full;
+        }
+        if (open) open.setAttribute("href", full);
         return;
       }
-      if (previewOpen) previewOpen.setAttribute("href", full);
-      if (previewUrlEl) {
-        const display = full.replace(/^https?:\/\//, "");
-        previewUrlEl.textContent = display;
-        previewUrlEl.title = full;
-      }
     });
-  }
+
+    // Wire declared tabs/panes, bind the add button, restore last active tab.
+    panesEl.querySelectorAll(".preview-tab-pane").forEach(wirePane);
+    tabsBar.querySelectorAll(".tab").forEach(wireTab);
+    if (addBtn) addBtn.addEventListener("click", addRuntimeTab);
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved && panesEl.querySelector('.preview-tab-pane[data-pane="' + saved + '"]')) {
+        activate(saved);
+      }
+    } catch (e) {
+      /* private mode — keep server-rendered active tab */
+    }
+  })();
 
   // --- Pane layout: resizable split + collapse toggles -------------------
   //

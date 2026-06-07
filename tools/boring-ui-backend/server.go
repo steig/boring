@@ -33,17 +33,28 @@ import (
 //go:embed assets/index.html assets/chat.css assets/chat.js
 var assetsFS embed.FS
 
+// PreviewTab is one declared preview origin (ARD-0022 §6 / ARD-0035 preview
+// tabs). Each tab has its own dedicated-origin reverse proxy (ARD-0033), so the
+// iframe loads FrameURL (the proxy) while the header shows/opens Upstream.
+type PreviewTab struct {
+	Name     string // slug-shaped label shown on the tab chip
+	Upstream string // absolute UPSTREAM URL (header display + open-in-new-tab)
+	Port     int    // host TCP port the dedicated-origin proxy binds (set host-side)
+	FrameURL string // absolute URL the iframe loads, e.g. http://127.0.0.1:<port>/ — set after the listener binds
+}
+
 // Server bundles the long-lived state for one project's backend.
 type Server struct {
-	Slug         string
-	Workdir      string   // project working directory (used by /api/save AND turn spawn)
-	PreviewURL   string   // absolute UPSTREAM URL being previewed (per ARD-0022 §6); shown in the header strip + open-in-new-tab link. Empty -> fallback message.
-	PreviewFrameURL string // absolute URL the right-pane iframe actually loads: the dedicated-origin preview proxy, e.g. http://127.0.0.1:<port>/ (ARD-0033). Empty even when PreviewURL is set -> fallback (no preview port wired).
-	TerminalURL  string   // absolute URL the LEFT-pane iframe loads when set (replaces chat thread w/ embedded terminal, e.g. ttyd serving claude); empty -> SSE chat UI
-	Provider     string   // "mock" | "claude" — selects the turn runner in handleMessages
-	AllowedPaths []string // resolved workdir-relative glob set for reactive path-allowlist enforcement (ARD-0029 §6 gap #1); empty -> no enforcement
-	Broadcaster  *Broadcaster
-	Thread       *Thread
+	Slug            string
+	Workdir         string       // project working directory (used by /api/save AND turn spawn)
+	PreviewURL      string       // back-compat: single UPSTREAM URL (folded into a one-element PreviewTabs when PreviewTabs is empty).
+	PreviewFrameURL string       // back-compat: single dedicated-origin frame URL (ARD-0033) paired with PreviewURL.
+	PreviewTabs     []PreviewTab // declared preview tabs; when non-empty, supersedes PreviewURL/PreviewFrameURL.
+	TerminalURL     string       // absolute URL the LEFT-pane iframe loads when set (replaces chat thread w/ embedded terminal, e.g. ttyd serving claude); empty -> SSE chat UI
+	Provider        string       // "mock" | "claude" — selects the turn runner in handleMessages
+	AllowedPaths    []string     // resolved workdir-relative glob set for reactive path-allowlist enforcement (ARD-0029 §6 gap #1); empty -> no enforcement
+	Broadcaster     *Broadcaster
+	Thread          *Thread
 
 	// SaveCmd is the command to shell out to on /api/save. Defaults to
 	// "boring save"; tests override. If the binary isn't on PATH, the
@@ -119,7 +130,21 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(renderIndex(string(data), s.PreviewURL, s.PreviewFrameURL, s.TerminalURL)))
+	_, _ = w.Write([]byte(renderIndex(string(data), s.previewTabs(), s.TerminalURL)))
+}
+
+// previewTabs returns the declared preview tabs, folding the back-compat
+// single PreviewURL/PreviewFrameURL pair into a one-element "default" tab when
+// PreviewTabs is empty (so tests and the singular --preview-url path still
+// render). Returns nil when no preview is configured.
+func (s *Server) previewTabs() []PreviewTab {
+	if len(s.PreviewTabs) > 0 {
+		return s.PreviewTabs
+	}
+	if s.PreviewURL != "" && s.PreviewFrameURL != "" {
+		return []PreviewTab{{Name: "default", Upstream: s.PreviewURL, FrameURL: s.PreviewFrameURL}}
+	}
+	return nil
 }
 
 // renderIndex performs serve-time substitution of the pane content.
@@ -129,7 +154,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // We don't use html/template because the only dynamic values are CLI flags
 // (not user-supplied), and we want the HTML readable in source.
 // strings.ReplaceAll is sufficient.
-func renderIndex(html, previewURL, previewFrameURL, terminalURL string) string {
+func renderIndex(html string, previewTabs []PreviewTab, terminalURL string) string {
 	htmlEsc := strings.NewReplacer(`"`, "&quot;", `<`, "&lt;", `>`, "&gt;", `&`, "&amp;")
 
 	// LEFT_PANE: terminal iframe when configured, chat composer + thread otherwise.
@@ -147,56 +172,72 @@ func renderIndex(html, previewURL, previewFrameURL, terminalURL string) string {
 	}
 	html = strings.ReplaceAll(html, "{{LEFT_PANE}}", leftPane)
 
-	// PREVIEW_PANE: the iframe loads the dedicated-origin preview proxy
-	// (previewFrameURL, e.g. http://127.0.0.1:<port>/), NOT the upstream
-	// directly and NOT a sub-path. See ARD-0033 / preview.go for why.
-	//
-	// We need BOTH a configured upstream (previewURL) AND a wired preview
-	// proxy origin (previewFrameURL). The latter is empty when --preview-port
-	// wasn't passed (e.g. a bare `boring-ui-backend --preview-url ...` with no
-	// listener) — in that case we degrade to the fallback message rather than
-	// render an iframe pointing nowhere.
-	var pane string
-	if previewURL != "" && previewFrameURL != "" {
-		// HTML-attribute-safe escape for URLs inside src="..." / href="...".
-		// The URLs come from CLI flags (operator-controlled), so this is
-		// defense in depth rather than untrusted-input sanitization.
-		htmlEsc := strings.NewReplacer(`"`, "&quot;", `<`, "&lt;", `>`, "&gt;", `&`, "&amp;")
-		safeUpstream := htmlEsc.Replace(previewURL)         // header title + open-in-new-tab
-		safeFrame := htmlEsc.Replace(previewFrameURL)       // iframe src
-		// displayURL is the muted text strip — show the UPSTREAM (what's
-		// actually being previewed), scheme-stripped for compactness.
-		display := previewURL
-		for _, prefix := range []string{"https://", "http://"} {
-			if strings.HasPrefix(display, prefix) {
-				display = strings.TrimPrefix(display, prefix)
-				break
-			}
-		}
-		safeDisplay := htmlEsc.Replace(display)
-		// The URL display + open-in-new-tab link use the UPSTREAM URL (so the
-		// user sees/opens the real dev server in a clean tab — a top-level tab
-		// isn't subject to X-Frame-Options). The IFRAME src is the dedicated
-		// preview-proxy origin, which strips the upstream's X-Frame-Options /
-		// CSP frame-ancestors so it frames cleanly, and — being served at its
-		// own origin root — lets the upstream's root-absolute asset URLs
-		// (/cdn/..., /checkouts/...) resolve back into the proxy (ARD-0033).
-		pane = `<div class="preview-header">` +
-			`<span class="preview-url" title="` + safeUpstream + `">` + safeDisplay + `</span>` +
-			`<div class="preview-actions">` +
-			`<button type="button" class="preview-btn" id="preview-refresh" title="Reload preview">↻</button>` +
-			`<a class="preview-btn" id="preview-open" href="` + safeUpstream + `" target="_blank" rel="noopener noreferrer" title="Open in new tab">↗</a>` +
-			`</div>` +
-			`</div>` +
-			`<iframe id="preview-iframe" src="` + safeFrame + `" title="preview"></iframe>`
-	} else {
-		pane = `<div id="preview-fallback" class="preview-fallback">` +
+	return strings.ReplaceAll(html, "{{PREVIEW_PANE}}", renderPreviewPane(previewTabs))
+}
+
+// renderPreviewPane builds the preview pane: a tab strip (one chip per declared
+// tab + a runtime "add" button) and one tab-pane per declared tab. Each pane's
+// iframe loads the tab's dedicated-origin proxy (FrameURL, ARD-0033), NOT the
+// upstream directly and NOT a sub-path; the header shows/opens the UPSTREAM
+// (a top-level tab isn't subject to X-Frame-Options). The address input is
+// editable: chat.js navigates same-origin within the tab's proxy (ARD-0035 §
+// editable bar). Empty tab list -> the fallback message.
+func renderPreviewPane(tabs []PreviewTab) string {
+	if len(tabs) == 0 {
+		return `<div id="preview-fallback" class="preview-fallback">` +
 			`<p>No preview configured for this project.</p>` +
-			`<p class="hint">Set <code>--preview-url</code> on the backend to wire one.</p>` +
+			`<p class="hint">Set <code>--preview-url</code> (or <code>preview_urls:</code>) to wire one.</p>` +
 			`</div>`
 	}
-	return strings.ReplaceAll(html, "{{PREVIEW_PANE}}", pane)
+
+	// URLs are operator-controlled (CLI flags); escape as defense in depth.
+	esc := strings.NewReplacer(`"`, "&quot;", `<`, "&lt;", `>`, "&gt;", `&`, "&amp;")
+	schemeless := func(u string) string {
+		for _, p := range []string{"https://", "http://"} {
+			if strings.HasPrefix(u, p) {
+				return strings.TrimPrefix(u, p)
+			}
+		}
+		return u
+	}
+
+	var strip, panes strings.Builder
+	strip.WriteString(`<div class="preview-tabs" id="preview-tabs">`)
+	for i, t := range tabs {
+		active := ""
+		if i == 0 {
+			active = " active"
+		}
+		safeName := esc.Replace(t.Name)
+		strip.WriteString(`<button type="button" class="tab` + active + `" data-pane="` +
+			itoa(i) + `" title="` + safeName + `">` + safeName + `</button>`)
+
+		safeUpstream := esc.Replace(t.Upstream)
+		safeFrame := esc.Replace(t.FrameURL)
+		safeDisplay := esc.Replace(schemeless(t.Upstream))
+		panes.WriteString(`<div class="preview-tab-pane` + active + `" data-pane="` + itoa(i) +
+			`" data-frame-url="` + safeFrame + `" data-upstream="` + safeUpstream + `">` +
+			`<div class="preview-header">` +
+			`<input type="text" class="preview-url" value="` + safeDisplay + `" title="` + safeUpstream +
+			`" spellcheck="false" autocomplete="off" aria-label="preview address" />` +
+			`<div class="preview-actions">` +
+			`<button type="button" class="preview-btn preview-refresh" title="Reload preview">↻</button>` +
+			`<a class="preview-btn preview-open" href="` + safeUpstream + `" target="_blank" rel="noopener noreferrer" title="Open in new tab">↗</a>` +
+			`</div>` +
+			`</div>` +
+			`<iframe class="preview-iframe" src="` + safeFrame + `" title="preview"></iframe>` +
+			`</div>`)
+	}
+	// Runtime "add tab" (chat.js clones the active tab's origin; same-origin,
+	// frontend-only, never a new backend proxy — ARD-0035 containment).
+	strip.WriteString(`<button type="button" class="tab-add" id="preview-tab-add" title="New tab (same dev server)">+</button>`)
+	strip.WriteString(`</div>`)
+
+	return strip.String() + `<div class="preview-panes" id="preview-panes">` + panes.String() + `</div>`
 }
+
+// itoa is strconv.Itoa without the import churn for a hot, tiny call site.
+func itoa(i int) string { return fmt.Sprintf("%d", i) }
 
 func (s *Server) handleAsset(name, contentType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

@@ -144,6 +144,31 @@ esac
   && pass "preview port ($pv1) distinct from ttyd port ($p1) for same slug" \
   || fail "preview port collides with ttyd port: $pv1"
 
+# web_ui_preview_urls_arg (ARD-0035 multi-tab): builds the backend --preview-urls
+# value (name=port=upstream,...) with a distinct deterministic port per tab.
+pu_two="$(web_ui_preview_urls_arg multi 'app=http://127.0.0.1:3000,docs=http://127.0.0.1:8788')"
+case "$pu_two" in
+  app=*=http://127.0.0.1:3000,docs=*=http://127.0.0.1:8788)
+    pass "preview-urls builds name=port=upstream per tab ($pu_two)" ;;
+  *) fail "preview-urls arg malformed: $pu_two" ;;
+esac
+# Distinct ports per tab.
+pu_p1="$(printf '%s' "$pu_two" | awk -F, '{print $1}' | awk -F= '{print $2}')"
+pu_p2="$(printf '%s' "$pu_two" | awk -F, '{print $2}' | awk -F= '{print $2}')"
+[[ -n "$pu_p1" && -n "$pu_p2" && "$pu_p1" != "$pu_p2" ]] \
+  && pass "preview-urls allocates distinct ports per tab ($pu_p1 != $pu_p2)" \
+  || fail "preview-urls tab ports not distinct: $pu_p1 / $pu_p2"
+# Query string ('=' in URL) survives the wire format.
+pu_q="$(web_ui_preview_urls_arg multi 'app=http://127.0.0.1:3000/?x=1')"
+case "$pu_q" in
+  app=*=http://127.0.0.1:3000/?x=1) pass "preview-urls preserves '=' in upstream query" ;;
+  *) fail "preview-urls mangled query string: $pu_q" ;;
+esac
+# Empty input -> empty output (no preview).
+[[ -z "$(web_ui_preview_urls_arg multi '')" ]] \
+  && pass "preview-urls empty input -> empty output" \
+  || fail "preview-urls non-empty for empty input"
+
 # ============================================================================
 # Test 4: web_ui_url returns the expected shape
 # ============================================================================

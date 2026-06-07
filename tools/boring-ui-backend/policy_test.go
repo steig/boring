@@ -225,7 +225,7 @@ func TestEnforceAllowlist_NoopWhenEmpty(t *testing.T) {
 func TestEnforceAllowlist_RevertsOutOfAllowlist(t *testing.T) {
 	dir := t.TempDir()
 	initRepo(t, dir, map[string]string{
-		"web/src/index.js": "original src\n",
+		"web/src/index.js":   "original src\n",
 		"docker-compose.yml": "version: \"3\"\nservices:\n  app:\n    image: nginx\n",
 	})
 	// Modify one in-allowlist file (should survive) and one out-of-allowlist
@@ -369,4 +369,50 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestParsePreviewURLs(t *testing.T) {
+	// Singular --preview-url/--preview-port folds into one "default" tab.
+	tabs, err := parsePreviewURLs("", "http://localhost:3000/", 8700)
+	if err != nil {
+		t.Fatalf("singular: %v", err)
+	}
+	if len(tabs) != 1 || tabs[0].Name != "default" || tabs[0].Upstream != "http://localhost:3000/" || tabs[0].Port != 8700 {
+		t.Fatalf("singular fold got %+v", tabs)
+	}
+
+	// Nothing configured -> nil, nil.
+	if tabs, err := parsePreviewURLs("", "", 0); err != nil || tabs != nil {
+		t.Fatalf("none: tabs=%+v err=%v", tabs, err)
+	}
+
+	// Plural parse; an '=' inside the upstream query string must survive.
+	tabs, err = parsePreviewURLs("app=8700=http://127.0.0.1:3000/?x=1,docs=8701=http://127.0.0.1:8788/", "", 0)
+	if err != nil {
+		t.Fatalf("plural: %v", err)
+	}
+	if len(tabs) != 2 {
+		t.Fatalf("plural want 2 got %d (%+v)", len(tabs), tabs)
+	}
+	if tabs[0].Name != "app" || tabs[0].Port != 8700 || tabs[0].Upstream != "http://127.0.0.1:3000/?x=1" {
+		t.Errorf("tab0 = %+v", tabs[0])
+	}
+	if tabs[1].Name != "docs" || tabs[1].Port != 8701 || tabs[1].Upstream != "http://127.0.0.1:8788/" {
+		t.Errorf("tab1 = %+v", tabs[1])
+	}
+
+	// Error cases: each must return a non-nil error.
+	bad := map[string][3]interface{}{
+		"mutual-exclusion": {"app=8700=http://x", "http://y", 0},
+		"duplicate-name":   {"app=8700=http://x,app=8701=http://y", "", 0},
+		"invalid-name":     {"App=8700=http://x", "", 0},
+		"bad-port":         {"app=notaport=http://x", "", 0},
+		"missing-port":     {"app=http://x", "", 0},
+		"empty-upstream":   {"app=8700=", "", 0},
+	}
+	for name, args := range bad {
+		if _, err := parsePreviewURLs(args[0].(string), args[1].(string), args[2].(int)); err == nil {
+			t.Errorf("%s: expected error, got nil", name)
+		}
+	}
 }
