@@ -43,6 +43,7 @@ If you're looking for the **convention** for writing new ARDs (full vs. mini, nu
 | [0031](ard-0031-iframe-via-backend-proxy-with-frame-blocking-headers-stripped.md) | 2026-05-26 | Iframe-via-backend-proxy strips frame-blocking headers (mini-ARD) | Backend reverse-proxies the preview, stripping `X-Frame-Options` + CSP `frame-ancestors`. **Superseded by ARD-0033** (§1 sub-path mount). |
 | [0032](ard-0032-local-secret-provisioning-into-os-keyring.md) | 2026-05-26 | `boring secret` — local keyring provisioning (mini-ARD) | `boring secret {set\|get\|rm}` writes the OS keyring (Keychain/libsecret) so non-engineer launches resolve credentials with zero per-use auth; boring still owns no secret store. |
 | [0033](ard-0033-preview-iframe-on-dedicated-origin.md) | 2026-05-26 | Preview iframe on a dedicated origin (mini-ARD) | Preview proxy moves from a same-origin sub-path to its own per-slug port, mounted at root, so Shopify-style root-absolute asset URLs resolve. Supersedes ARD-0031 §1. |
+| [0034](ard-0034-external-api-and-warehouse-readiness-gaps.md) | 2026-06-06 | External-API / data-warehouse readiness gaps (Proposed) | Stress-test against a warehouse hitting BigQuery/Ads/Analytics/Shopify/cloud-DBs surfaces 11 findings. Headline: boot-time egress IP-pinning can't track rotating-IP cloud APIs; file-shaped creds (GCP SA JSON) fall outside the resolver. Proposes SNI-aware egress + `secret-file://`. Amends ARD-0011, ARD-0002. |
 
 ## What "Status" means on each ARD
 
