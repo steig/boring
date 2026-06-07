@@ -54,6 +54,25 @@ Pure local dev (`wrangler dev` in the default local/workerd mode) needs very
 little egress; `wrangler deploy`, `wrangler login`, and `--remote`/remote
 bindings need live `api.cloudflare.com`.
 
+## Running locally without 1Password
+
+The base profile declares `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` as
+`secret://op://...` URIs, and `boring open` resolves **all** secrets up front —
+failing loud if it can't. Without the 1Password CLI (or those vault items) it
+stops before the container starts. Local `wrangler dev` doesn't need those
+credentials (they're only for `wrangler deploy` / `--remote`), so copy the
+overlay template to neutralize them:
+
+```sh
+cp .boring/profile.overlay.yaml.example .boring/profile.overlay.yaml
+boring open .
+```
+
+`profile.overlay.yaml` is gitignored and deep-merges over the base profile
+(ARD-0001), turning the two secret URIs into harmless `"local-dev"` literals so
+the resolver has nothing to fetch. Delete it (or fill in real vault items) when
+you want to `deploy`.
+
 ## How to use this
 
 1. Copy the profile into your repo: `cp -r examples/emdash/.boring ~/code/my-worker/`
