@@ -11,6 +11,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -339,16 +340,18 @@ func TestAllowedClaudeToolsExcludesOrchestration(t *testing.T) {
 }
 
 func TestClaudeAvailable_RefusesWithAnthropicAPIKey(t *testing.T) {
-	// Save + restore the env var so we don't leak across tests.
-	old, had := os.LookupEnv("ANTHROPIC_API_KEY")
-	t.Cleanup(func() {
-		if had {
-			os.Setenv("ANTHROPIC_API_KEY", old)
-		} else {
-			os.Unsetenv("ANTHROPIC_API_KEY")
-		}
-	})
-	os.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	// claudeAvailable checks PATH before ANTHROPIC_API_KEY, so to exercise the
+	// key-refusal branch the test must guarantee a `claude` binary is found —
+	// otherwise the binary-missing early return fires first. A dev box running
+	// Claude Code has claude on PATH (so this passed locally); CI runners don't
+	// (so it failed there). Stub one on a temp PATH to make the test hermetic.
+	stub := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stub, "claude"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+
 	ok, reason := claudeAvailable()
 	if ok {
 		t.Fatalf("claudeAvailable should refuse when ANTHROPIC_API_KEY is set")
