@@ -15,19 +15,37 @@ for `wrangler dev`, `wrangler pages dev`, and most edge/serverless stacks.
   are no database/cache sidecars to declare (unlike
   [node-with-redis](../node-with-redis/) or [django-postgres](../django-postgres/)).
   The field is required, so it's `[]` rather than omitted.
-- **`forward_ports: [8787]`** — `wrangler dev`'s default port, forwarded to the
-  host (and reachable by the boring-ui preview iframe).
+- **`volumes:` + `mounts:`** — a dedicated `node-modules` volume mounted over
+  `/workspace/node_modules`. The repo is bind-mounted into the container, which
+  would otherwise drag the host's `node_modules` in. That breaks two ways: a
+  host **pnpm** install leaves a symlink farm that in-container `npm` chokes on,
+  and **native deps like `workerd`** ship per-OS binaries (your darwin-arm64
+  binary is wrong for the linux container). The volume gives the container a
+  clean, OS-correct install. **This matters for any project with native deps.**
+- **`forward_ports: [3000]`** — served on 3000 to match the `node` preset's
+  boring-ui preview default (ARD-0022 §6.2), so the preview pane reaches the dev
+  server out of the box. wrangler's own default is 8787; see the port note below.
 - **`env:`** — `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` as `secret://`
   URIs (resolved in memory, never written to disk), plus a literal
   `WRANGLER_SEND_METRICS: "false"`. Cloudflare creds are plain env tokens, so
   they fit the resolver with zero friction — no credential-file dance.
+- **`setup:`** — `sudo chown dev:dev /workspace/node_modules` (the fresh volume
+  is root-owned; the install runs as the non-root `dev` user) then `npm install`.
 - **`dev:`** ([ARD-0030](../../docs/ards/ard-0030-dev-profile-field-foreground-command-on-boring-open.md))
-  — `boring open` foregrounds `wrangler dev`. **Note the `--ip 0.0.0.0`:**
+  — `boring open` foregrounds `wrangler dev` on :3000. **Note the `--ip 0.0.0.0`:**
   wrangler binds `127.0.0.1` inside the container by default, which the host
   port-forward and preview iframe can't reach.
 - **`guardrails:`** — `forbid_commands: ["wrangler deploy"]` so a non-engineer
   can iterate on `wrangler dev` but can't ship to production
   ([ARD-0005](../../docs/ards/ard-0005-security-model-inversion.md)).
+
+## Port + preview note
+
+wrangler defaults to **8787**, but boring-ui's preview pane uses the `node`
+preset's default of **3000**, so this profile serves on 3000 to make the preview
+work with no extra config. A top-level `preview_url:` override (to keep 8787) is
+honored only on boring builds that include the `cmd_open` preview-resolution fix
+— older builds silently drop it and fall back to the preset default.
 
 ## Egress — read before turning it on
 

@@ -2,7 +2,7 @@
 #
 # Wrapping a Wrangler/Workers project. Local dev runs workerd via `wrangler
 # dev`; Miniflare simulates D1/KV/R2/Durable Objects in-process, so there are
-# no services: sidecars to declare. Passes schema validation today.
+# no services: sidecars to declare. Validated end-to-end with `boring open`.
 
 profile_version: "1"
 name: emdash
@@ -15,26 +15,44 @@ preset: node
 # `wrangler dev`. The field is required, so declare it empty.
 services: []
 
-# wrangler dev's default port. The dev container forwards it to the host (and
-# the boring-ui preview iframe can point at it).
-forward_ports: [8787]
+# Dedicated node_modules volume. The repo is bind-mounted at /workspace, which
+# would otherwise drag your host's node_modules into the container. That breaks
+# two ways: (1) a host pnpm install creates a symlink farm that in-container npm
+# chokes on; (2) native deps like workerd ship per-OS binaries — your host
+# (e.g. darwin-arm64) binary is wrong for the linux container. A named volume
+# over /workspace/node_modules gives the container a clean, OS-correct install.
+volumes: [node-modules]
+mounts:
+  - node-modules:/workspace/node_modules
+
+# Serve on 3000 — the node preset's boring-ui preview default (ARD-0022 §6.2),
+# so the preview pane reaches the dev server out of the box. (wrangler's own
+# default is 8787; if your boring honors a top-level `preview_url:` override you
+# can keep 8787 and add `preview_url: http://127.0.0.1:8787` instead.)
+forward_ports: [3000]
 
 env:
   # Wrangler reads these from the environment; the resolver injects them at
   # `boring open` time and they never touch disk (ARD-0002). Point them at your
-  # team's actual vault + item names.
+  # team's actual vault + item names. Only needed for deploy / --remote — see
+  # the README for running locally without them.
   CLOUDFLARE_ACCOUNT_ID: secret://op://Eng/Cloudflare/account-id
   CLOUDFLARE_API_TOKEN:  secret://op://Eng/Cloudflare/api-token
   # Disable wrangler telemetry (also removes one egress destination).
   WRANGLER_SEND_METRICS: "false"
 
 setup:
-  - npm ci
+  # The node_modules volume is created root-owned; hand it to the dev user
+  # before installing (npm runs as dev, not root).
+  - sudo chown dev:dev /workspace/node_modules
+  # `npm install` (not `npm ci`) so it works whatever lockfile the repo carries
+  # (e.g. a pnpm-lock.yaml from host-side pnpm, which npm ignores).
+  - npm install
 
 dev:
   # --ip 0.0.0.0 is load-bearing: wrangler binds 127.0.0.1 inside the container
   # by default, which the host port-forward / preview iframe can't reach.
-  command: npx wrangler dev --ip 0.0.0.0 --port 8787
+  command: npx wrangler dev --ip 0.0.0.0 --port 3000
 
 guardrails:
   # Containment (ARD-0005): a non-engineer can iterate on `wrangler dev` but
