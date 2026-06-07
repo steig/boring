@@ -41,8 +41,9 @@ func main() {
 		threadsDir   = flag.String("threads-dir", DefaultThreadsDir, "directory for thread JSONL files")
 		provider     = flag.String("provider", "mock", "AI provider: mock | claude")
 		mock         = flag.Bool("mock", false, "deprecated alias for --provider=mock")
-		previewURL   = flag.String("preview-url", "", "absolute UPSTREAM URL to preview (per ARD-0022 §6); empty shows fallback message. The iframe does NOT load this directly — when --preview-port is set, a dedicated-origin reverse proxy on that port forwards to this URL and strips X-Frame-Options + CSP frame-ancestors per ARD-0033, so upstreams with iframe-hostile headers (Shopify, GitHub, most prod sites) render and their root-absolute asset URLs resolve.")
+		previewURL   = flag.String("preview-url", "", "absolute UPSTREAM URL to preview (per ARD-0022 §6); empty shows fallback message. The iframe does NOT load this directly — when --preview-port is set, a dedicated-origin reverse proxy on that port forwards to this URL and strips X-Frame-Options + CSP frame-ancestors per ARD-0033, so upstreams with iframe-hostile headers (Shopify, GitHub, most prod sites) render and their root-absolute asset URLs resolve. Mutually exclusive with --preview-urls.")
 		previewPort  = flag.Int("preview-port", 0, "host TCP port (bound on 127.0.0.1) for the dedicated-origin preview reverse proxy (ARD-0033). Required for the preview iframe to render; with --preview-url set but this unset, the UI shows the fallback message. 0 disables.")
+		previewURLs  = flag.String("preview-urls", "", "multiple preview tabs (ARD-0035): comma-separated name=port=upstream entries, each with its own dedicated-origin proxy on the given host port. Mutually exclusive with --preview-url/--preview-port.")
 		terminalURL  = flag.String("terminal-url", "", "absolute URL the LEFT-pane terminal iframe loads (e.g. ttyd serving claude); empty renders the SSE chat UI instead")
 		allowedPaths = flag.String("allowed-paths", "", "comma-separated glob patterns relative to workdir; files modified by the AI outside these patterns are reverted via git after each turn. Empty disables enforcement.")
 	)
@@ -80,12 +81,18 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*socketPath, *slug, *workdir, *threadsDir, *previewURL, *previewPort, *terminalURL, *provider, parsedAllowed); err != nil {
+	previewTabs, err := parsePreviewURLs(*previewURLs, *previewURL, *previewPort)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "boring-ui-backend: %v\n", err)
+		os.Exit(2)
+	}
+
+	if err := run(*socketPath, *slug, *workdir, *threadsDir, previewTabs, *terminalURL, *provider, parsedAllowed); err != nil {
 		log.Fatalf("boring-ui-backend: %v", err)
 	}
 }
 
-func run(socketPath, slug, workdir, threadsDir, previewURL string, previewPort int, terminalURL, provider string, allowedPaths []string) error {
+func run(socketPath, slug, workdir, threadsDir string, previewTabs []PreviewTab, terminalURL, provider string, allowedPaths []string) error {
 	// Set up the socket directory + remove any stale socket from a prior run.
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return fmt.Errorf("create socket dir: %w", err)
@@ -103,40 +110,42 @@ func run(socketPath, slug, workdir, threadsDir, previewURL string, previewPort i
 	b := NewBroadcaster()
 	defer b.Close()
 
-	srv := NewServer(slug, workdir, previewURL, terminalURL, provider, allowedPaths, b, thread)
+	srv := NewServer(slug, workdir, "", terminalURL, provider, allowedPaths, b, thread)
 
-	// Dedicated-origin preview proxy (ARD-0033): when both an upstream URL and
-	// a port are configured, the right-pane iframe loads http://127.0.0.1:<port>/
-	// and a second HTTP server on that port reverse-proxies to previewURL with
-	// X-Frame-Options + CSP frame-ancestors stripped. Served at root so the
-	// upstream's root-absolute asset URLs (/cdn/..., /checkouts/...) resolve back
-	// into the proxy rather than escaping to the host proxy's frame-blocked root.
-	var previewSrv *http.Server
-	var previewListener net.Listener
-	if previewURL != "" && previewPort != 0 {
-		ph, perr := newPreviewProxyHandler(previewURL)
+	// Dedicated-origin preview proxies (ARD-0033 + ARD-0035 tabs): one reverse
+	// proxy per declared tab, each on its own host port, forwarding to that
+	// tab's upstream with X-Frame-Options + CSP frame-ancestors stripped. Served
+	// at root so upstream root-absolute asset URLs (/cdn/...) resolve back into
+	// the proxy. A bad upstream or a port-bind collision disables only that tab
+	// — the chat UI and the other tabs keep working.
+	var previewSrvs []*http.Server
+	var previewListeners []net.Listener
+	var boundTabs []PreviewTab
+	for _, tab := range previewTabs {
+		ph, perr := newPreviewProxyHandler(tab.Upstream)
 		if perr != nil {
-			return fmt.Errorf("preview proxy: %w", perr)
+			log.Printf("preview proxy: tab %q has invalid upstream %q (%v); tab skipped", tab.Name, tab.Upstream, perr)
+			continue
 		}
-		addr := fmt.Sprintf("127.0.0.1:%d", previewPort)
-		if ln, lerr := net.Listen("tcp", addr); lerr != nil {
-			// A preview-port collision must NOT take down the chat UI. Degrade
-			// to the "no preview configured" fallback (PreviewFrameURL stays "")
-			// and keep serving the rest.
-			log.Printf("preview proxy: cannot bind %s (%v); preview disabled, chat UI unaffected", addr, lerr)
-		} else {
-			previewListener = ln
-			srv.PreviewFrameURL = fmt.Sprintf("http://127.0.0.1:%d/", previewPort)
-			previewSrv = &http.Server{
-				Handler:           ph,
-				ReadHeaderTimeout: 10 * time.Second,
-				// Long timeouts: HMR websockets + streaming upstreams stay open.
-				ReadTimeout:  0,
-				WriteTimeout: 0,
-				IdleTimeout:  120 * time.Second,
-			}
+		addr := fmt.Sprintf("127.0.0.1:%d", tab.Port)
+		ln, lerr := net.Listen("tcp", addr)
+		if lerr != nil {
+			log.Printf("preview proxy: tab %q cannot bind %s (%v); tab disabled, rest unaffected", tab.Name, addr, lerr)
+			continue
 		}
+		tab.FrameURL = fmt.Sprintf("http://127.0.0.1:%d/", tab.Port)
+		boundTabs = append(boundTabs, tab)
+		previewListeners = append(previewListeners, ln)
+		previewSrvs = append(previewSrvs, &http.Server{
+			Handler:           ph,
+			ReadHeaderTimeout: 10 * time.Second,
+			// Long timeouts: HMR websockets + streaming upstreams stay open.
+			ReadTimeout:  0,
+			WriteTimeout: 0,
+			IdleTimeout:  120 * time.Second,
+		})
 	}
+	srv.PreviewTabs = boundTabs
 
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -166,19 +175,20 @@ func run(socketPath, slug, workdir, threadsDir, previewURL string, previewPort i
 		shutdownCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
 		defer c()
 		_ = httpSrv.Shutdown(shutdownCtx)
-		if previewSrv != nil {
-			_ = previewSrv.Shutdown(shutdownCtx)
+		for _, ps := range previewSrvs {
+			_ = ps.Shutdown(shutdownCtx)
 		}
 	}()
 
 	// Start the dedicated-origin preview proxy (if configured) before the main
 	// server. A serve error here is logged but non-fatal — the chat UI keeps
 	// working even if the preview listener dies.
-	if previewSrv != nil {
-		log.Printf("preview proxy serving on %s -> %s (frame-blocking headers stripped, ARD-0033)", previewListener.Addr(), previewURL)
+	for i := range previewSrvs {
+		ps, ln, tab := previewSrvs[i], previewListeners[i], boundTabs[i]
+		log.Printf("preview proxy [%s] serving on %s -> %s (frame-blocking headers stripped, ARD-0033)", tab.Name, ln.Addr(), tab.Upstream)
 		go func() {
-			if err := previewSrv.Serve(previewListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("preview proxy serve error: %v", err)
+			if err := ps.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("preview proxy [%s] serve error: %v", tab.Name, err)
 			}
 		}()
 	}

@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -50,6 +51,79 @@ func parseAllowedPaths(commaSep string) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+// parsePreviewURLs builds the declared preview tab list from the backend's
+// flags (ARD-0022 §6 / ARD-0035 preview tabs).
+//
+// Plural form (--preview-urls): comma-separated "name=port=upstream" entries,
+// where port is the host-allocated dedicated-origin proxy port (ARD-0033) for
+// that tab. The singular --preview-url/--preview-port folds into a single
+// "default" tab. The two forms are mutually exclusive. Tab names must be
+// slug-shaped ([a-z0-9-]+) and unique. The upstream keeps any '=' (we split on
+// only the first two), so query strings survive. Returns nil,nil when no
+// preview is configured (the UI shows its fallback).
+func parsePreviewURLs(plural, singularURL string, singularPort int) ([]PreviewTab, error) {
+	plural = strings.TrimSpace(plural)
+	hasSingular := strings.TrimSpace(singularURL) != "" || singularPort != 0
+	if plural != "" && hasSingular {
+		return nil, fmt.Errorf("--preview-urls and --preview-url/--preview-port are mutually exclusive")
+	}
+
+	if plural == "" {
+		if strings.TrimSpace(singularURL) == "" || singularPort == 0 {
+			return nil, nil
+		}
+		return []PreviewTab{{Name: "default", Upstream: strings.TrimSpace(singularURL), Port: singularPort}}, nil
+	}
+
+	var tabs []PreviewTab
+	seen := make(map[string]bool)
+	for _, entry := range strings.Split(plural, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, "=", 3)
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("--preview-urls entry %q must be name=port=upstream", entry)
+		}
+		name := strings.TrimSpace(parts[0])
+		upstream := strings.TrimSpace(parts[2])
+		if !isPreviewTabName(name) {
+			return nil, fmt.Errorf("--preview-urls: invalid tab name %q (want [a-z0-9-]+)", name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("--preview-urls: duplicate tab name %q", name)
+		}
+		port, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil || port <= 0 || port > 65535 {
+			return nil, fmt.Errorf("--preview-urls: tab %q has invalid port %q", name, parts[1])
+		}
+		if upstream == "" {
+			return nil, fmt.Errorf("--preview-urls: tab %q has empty upstream", name)
+		}
+		seen[name] = true
+		tabs = append(tabs, PreviewTab{Name: name, Upstream: upstream, Port: port})
+	}
+	if len(tabs) == 0 {
+		return nil, fmt.Errorf("--preview-urls was set but contained no valid entries")
+	}
+	return tabs, nil
+}
+
+// isPreviewTabName reports whether s is a non-empty slug ([a-z0-9-]+) — the
+// same shape lib/profile.sh enforces for preview_urls[].name.
+func isPreviewTabName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // pathAllowed reports whether repoRelPath matches ANY glob in the allowlist.
@@ -110,12 +184,13 @@ func pathAllowed(repoRelPath string, allowlist []string) bool {
 // Non-globstar segments use filepath.Match for "*" / "?" / character classes.
 //
 // Examples:
-//   matchGlobstar("web/src/**", "web/src/lib/auth.ts")   = true
-//   matchGlobstar("web/src/**", "web/src/auth.ts")       = true
-//   matchGlobstar("web/src/**", "web/src")               = true (zero-seg match)
-//   matchGlobstar("web/src/**", "web/server/auth.ts")    = false
-//   matchGlobstar("*.md", "foo.md")                      = true
-//   matchGlobstar("*.md", "docs/foo.md")                 = false (single * stays in segment)
+//
+//	matchGlobstar("web/src/**", "web/src/lib/auth.ts")   = true
+//	matchGlobstar("web/src/**", "web/src/auth.ts")       = true
+//	matchGlobstar("web/src/**", "web/src")               = true (zero-seg match)
+//	matchGlobstar("web/src/**", "web/server/auth.ts")    = false
+//	matchGlobstar("*.md", "foo.md")                      = true
+//	matchGlobstar("*.md", "docs/foo.md")                 = false (single * stays in segment)
 func matchGlobstar(pattern, path string) bool {
 	pSegs := strings.Split(pattern, "/")
 	tSegs := strings.Split(path, "/")

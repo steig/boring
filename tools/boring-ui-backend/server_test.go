@@ -134,8 +134,8 @@ func TestIndexPreviewIframeWhenURLSet(t *testing.T) {
 	if !bytes.Contains(body, []byte(want)) {
 		t.Errorf("expected iframe %s; got %s", want, string(body[:min(400, len(body))]))
 	}
-	if !bytes.Contains(body, []byte(`id="preview-iframe"`)) {
-		t.Errorf("expected iframe id=preview-iframe; got %s", string(body[:min(400, len(body))]))
+	if !bytes.Contains(body, []byte(`class="preview-iframe"`)) {
+		t.Errorf("expected iframe class=preview-iframe; got %s", string(body[:min(400, len(body))]))
 	}
 	// Guard against the superseded sub-path designs regressing.
 	if bytes.Contains(body, []byte(`src="preview/"`)) || bytes.Contains(body, []byte(`src="/preview/"`)) {
@@ -180,14 +180,16 @@ func TestIndexPreviewHeaderRendersWhenURLSet(t *testing.T) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	mustContain := []string{
-		`class="preview-header"`,                                // header strip
-		`id="preview-refresh"`,                                  // refresh button
-		`id="preview-open"`,                                     // open-in-new-tab link
-		`href="http://localhost:3000/"`,                         // link target
-		`target="_blank"`,                                       // opens new tab
-		`rel="noopener noreferrer"`,                             // safe link
-		`localhost:3000/`,                                       // muted URL display (scheme stripped)
-		`class="preview-url"`,                                   // URL element
+		`class="preview-header"`,         // header strip
+		`class="preview-btn preview-refresh"`, // refresh button (class, not id — N panes)
+		`class="preview-btn preview-open"`,    // open-in-new-tab link
+		`href="http://localhost:3000/"`,  // link target
+		`target="_blank"`,                // opens new tab
+		`rel="noopener noreferrer"`,      // safe link
+		`localhost:3000/`,                // muted URL display (scheme stripped)
+		`class="preview-url"`,            // editable address input
+		`class="preview-tabs"`,           // tab strip (ARD-0035)
+		`id="preview-tab-add"`,           // runtime add-tab button
 	}
 	for _, want := range mustContain {
 		if !bytes.Contains(body, []byte(want)) {
@@ -206,7 +208,7 @@ func TestIndexPreviewHeaderAbsentWhenURLEmpty(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	for _, forbidden := range []string{`preview-header`, `id="preview-refresh"`, `id="preview-open"`} {
+	for _, forbidden := range []string{`preview-header`, `preview-refresh`, `preview-open`, `preview-tabs`} {
 		if bytes.Contains(body, []byte(forbidden)) {
 			t.Errorf("preview header leaked through with empty URL: found %q in:\n%s",
 				forbidden, string(body[:min(800, len(body))]))
@@ -537,6 +539,48 @@ func TestUndoStub(t *testing.T) {
 	}
 	if got[0].Type != EventToolResult {
 		t.Errorf("type=%s want %s", got[0].Type, EventToolResult)
+	}
+}
+
+func TestIndexPreviewMultipleTabs(t *testing.T) {
+	// ARD-0035: with >1 declared preview tab, renderIndex emits a tab strip and
+	// one pane per tab (each its own dedicated-origin iframe).
+	dir := t.TempDir()
+	th, err := NewThread(dir, "test")
+	if err != nil {
+		t.Fatalf("NewThread: %v", err)
+	}
+	b := NewBroadcaster()
+	t.Cleanup(b.Close)
+	s := NewServer("test", t.TempDir(), "", "", "mock", nil, b, th)
+	s.SaveCmd = nil
+	s.PreviewTabs = []PreviewTab{
+		{Name: "app", Upstream: "http://localhost:3000/", FrameURL: "http://127.0.0.1:8700/"},
+		{Name: "docs", Upstream: "http://localhost:8788/", FrameURL: "http://127.0.0.1:8701/"},
+	}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{
+		`class="preview-tabs"`,                          // strip
+		`data-pane="0"`, `data-pane="1"`,                // two panes/tabs
+		`>app</button>`, `>docs</button>`,               // tab labels
+		`data-frame-url="http://127.0.0.1:8700/"`,       // pane 0 proxy
+		`data-frame-url="http://127.0.0.1:8701/"`,       // pane 1 proxy
+		`src="http://127.0.0.1:8700/"`,                  // iframe 0
+		`src="http://127.0.0.1:8701/"`,                  // iframe 1
+		`data-upstream="http://localhost:8788/"`,        // pane 1 upstream
+		`id="preview-tab-add"`,                          // runtime add button
+	} {
+		if !bytes.Contains(body, []byte(want)) {
+			t.Errorf("multi-tab preview missing %q in:\n%s", want, string(body[:min(1400, len(body))]))
+		}
 	}
 }
 

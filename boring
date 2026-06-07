@@ -382,18 +382,25 @@ _cmd_open_maybe_start_ui() {
   # Confirm claude is in the container + seed empty MCP config.
   web_ui_ensure_container_claude "$container_name"
 
-  # Resolve preview URL with fallback chain per ARD-0022 §6:
-  #   1. profile.ui.preview_url (boring-ui-specific override)
-  #   2. profile.preview_url (top-level, legacy/shared surfaces)
-  #   3. preset default from web_ui_preset_preview_default (ARD-0022 §6.2 table:
-  #      shopify→9292, django-node→5173, node→3000, node-postgres→3000)
+  # Resolve preview tabs (ARD-0022 §6 + ARD-0035 multi-tab) as a comma-separated
+  # name=upstream list for web_ui_backend_start. Precedence:
+  #   1. profile.ui.preview_url   → a single "default" tab (boring-ui override).
+  #   2. profile.preview_urls[]   → one tab per entry (the normalized list that
+  #      lib/profile.sh folds both preview_url: and preview_urls: into).
+  #   3. preset default           → a single "default" tab.
   #   4. Empty → backend renders the "no preview configured" fallback message.
-  local preview_url
-  preview_url="$(jq -r '.ui.preview_url // .preview_url // ""' <<<"$profile_json")"
-  if [[ -z "$preview_url" ]]; then
-    local _preset
+  local preview_tabs
+  preview_tabs="$(jq -r '
+    if (.ui.preview_url // "") != "" then "default=" + .ui.preview_url
+    elif ((.preview_urls // []) | length) > 0 then
+      (.preview_urls | map(.name + "=" + .url) | join(","))
+    else "" end
+  ' <<<"$profile_json")"
+  if [[ -z "$preview_tabs" ]]; then
+    local _preset _def
     _preset="$(jq -r '.preset // ""' <<<"$profile_json")"
-    preview_url="$(web_ui_preset_preview_default "$_preset")"
+    _def="$(web_ui_preset_preview_default "$_preset")"
+    [[ -n "$_def" ]] && preview_tabs="default=$_def"
   fi
 
   # Start the singleton proxy if it's not already running.
@@ -406,7 +413,7 @@ _cmd_open_maybe_start_ui() {
 
   # Per-project ttyd + backend.
   web_ui_ttyd_start "$slug" "$container_name" "$ttyd_port"
-  web_ui_backend_start "$SCRIPT_DIR" "$slug" "$repo" "$ttyd_port" "$preview_url" "$container_name"
+  web_ui_backend_start "$SCRIPT_DIR" "$slug" "$repo" "$ttyd_port" "$preview_tabs" "$container_name"
 
   # Register with the proxy so it can route /<slug>/.
   local socket
