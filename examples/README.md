@@ -9,6 +9,7 @@ a real `.boring/profile.yaml` that passes schema validation today.
 | [django-postgres/](django-postgres/) | A Django + Postgres polyglot profile using `preset: django-node`. Postgres sidecar, secret URIs, a `setup:` migrate chain, commented-out `restore:` block. |
 | [node-with-redis/](node-with-redis/) | A Node service with a Redis sidecar using `preset: node`. The polyglot-sidecar shape without Postgres or Python. |
 | [immich/](immich/) | A contributor sandbox for hacking on the [Immich](https://github.com/immich-app/immich) codebase. Real-world worked example: `preset: node-postgres` overridden to Node 24, plus Immich's custom Postgres (VectorChord + pgvecto.rs), Valkey, and the published ML release image as sidecars. |
+| [emdash/](emdash/) | A Cloudflare Workers (Wrangler) edge profile using `preset: node`. The serverless shape: **no sidecars** (Miniflare simulates D1/KV/R2/DO locally), a foreground `dev:` running `wrangler dev`, env-token secrets, and a `wrangler deploy` guardrail. Notes the ARD-0034 egress caveat for Cloudflare's anycast hosts. |
 
 ## How to use these
 

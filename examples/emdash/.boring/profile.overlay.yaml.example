@@ -1,0 +1,15 @@
+# Local-only override TEMPLATE. Copy to `profile.overlay.yaml` (same dir) to use:
+#
+#   cp .boring/profile.overlay.yaml.example .boring/profile.overlay.yaml
+#
+# boring deep-merges profile.overlay.yaml over profile.yaml with the overlay
+# winning (ARD-0001), and the real file is gitignored — so this is the place for
+# machine-local tweaks that shouldn't be committed.
+#
+# Here it neutralizes the Cloudflare secrets so `boring open` runs without the
+# 1Password CLI: local `wrangler dev` doesn't need real credentials (they're
+# only for `wrangler deploy` / --remote). Turning the secret:// URIs into plain
+# literals means the resolver has nothing to fetch.
+env:
+  CLOUDFLARE_ACCOUNT_ID: "local-dev"
+  CLOUDFLARE_API_TOKEN: "local-dev"
