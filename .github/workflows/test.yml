@@ -86,18 +86,28 @@ jobs:
           scripts/test.sh -v
 
   go-tests:
-    name: go test (proxy) + race
+    name: go test + race
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - boring-proxy        # ARD-0021 host reverse proxy
+          - boring-ui-backend   # ARD-0029 in-container UI backend
+          - boring-egress-proxy # ARD-0034 SNI-aware egress prototype
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: tools/boring-proxy/go.mod
-          cache-dependency-path: tools/boring-proxy/go.sum
+          go-version-file: tools/${{ matrix.module }}/go.mod
+          # Cache off: two of the three modules are stdlib-only and have no
+          # go.sum, which setup-go's dependency cache requires. The deps are
+          # tiny (fsnotify at most), so caching buys little.
+          cache: false
 
       - name: build, vet, test (race)
-        working-directory: tools/boring-proxy
+        working-directory: tools/${{ matrix.module }}
         run: |
           go build ./...
           go vet ./...
