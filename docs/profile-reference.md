@@ -257,7 +257,7 @@ Seven URI schemes are supported. Pick whichever matches your team's secret store
 | `op://` | `op` (1Password CLI) | `secret://op://<vault>/<item>/<field>` |
 | `keychain:` | `security` on macOS, `secret-tool` on Linux | `secret://keychain:<service>/<account>` |
 | `vault://` | `vault` (HashiCorp) | `secret://vault://<path>` |
-| `aws-sm:` | `aws secretsmanager` | `secret://aws-sm:<secret-name>` |
+| `aws-sm:` | `aws secretsmanager` | `secret://aws-sm:<secret-name>` or `secret://aws-sm:<secret-name>#<json-field>` |
 | `dbx-vault:` | `dbx vault read` | `secret://dbx-vault:<key>` |
 | `env:` | (no CLI) | `secret://env:<HOST_ENV_VAR_NAME>` |
 | `file:` | (no CLI) | `secret://file:<absolute-path>` |

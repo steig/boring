@@ -15,7 +15,7 @@
 #   keychain:service/account     macOS Keychain / Linux libsecret
 #   dbx-vault:<key>              dbx vault entry (via `dbx vault get`)
 #   vault://path/field           HashiCorp Vault
-#   aws-sm:<arn-or-name>         AWS Secrets Manager
+#   aws-sm:<id>[#field]          AWS Secrets Manager (optional JSON field)
 #   env:VAR_NAME                 Host environment variable (escape hatch)
 #   file:/abs/path               Local file contents (CI / dev convenience)
 
@@ -59,10 +59,27 @@ secret_resolve() {
 
     aws-sm:*)
       require_cmd aws "Install AWS CLI: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
-      aws secretsmanager get-secret-value \
-        --secret-id "${uri#aws-sm:}" \
+      # aws-sm:<secret-id>[#<field>]. ARNs contain ':' and '/', so '#' is the
+      # field delimiter (it appears in neither ARNs nor secret names). With a
+      # field, the SecretString is parsed as JSON and the named key extracted —
+      # AWS Secrets Manager secrets are conventionally JSON blobs.
+      local sm_ref="${uri#aws-sm:}"
+      local sm_id="$sm_ref" sm_field=""
+      case "$sm_ref" in
+        *"#"*) sm_field="${sm_ref##*#}"; sm_id="${sm_ref%#*}" ;;
+      esac
+      local sm_value
+      sm_value="$(aws secretsmanager get-secret-value \
+        --secret-id "$sm_id" \
         --query SecretString \
-        --output text
+        --output text)" || return 1
+      if [[ -n "$sm_field" ]]; then
+        require_cmd jq
+        printf '%s' "$sm_value" | jq -er --arg f "$sm_field" '.[$f]' \
+          || die "aws-sm: field '$sm_field' not found (or secret is not JSON) in $sm_id"
+      else
+        printf '%s' "$sm_value"
+      fi
       ;;
 
     env:*)
