@@ -482,10 +482,15 @@ ${build_args_block}"
   # the host env at compose-up time (`${BORING_EGRESS_MODE:-enforce}`) so
   # `--learn-mode` flips it without regenerating the compose file.
   local env_block
+  # JSON-encode each value (tojson) so embedded quotes/backslashes/newlines
+  # produce a valid YAML scalar (YAML is a JSON superset), and double every `$`
+  # so Docker Compose's variable interpolation can't mangle values that legibly
+  # contain `$` (passwords, DSNs). Compose un-escapes `$$`→`$` at parse time.
+  # tostring guards non-string literals (e.g. `FOO: 5`) before gsub.
   env_block="$(jq -r '
     .env | to_entries
     | map(select(.value.kind == "literal"))
-    | map("      \(.key): \"\(.value.value)\"")
+    | map("      \(.key): \((.value.value | tostring | gsub("\\$"; "$$")) | tojson)")
     | join("\n")
   ' <<<"$profile_json")"
 
@@ -512,7 +517,7 @@ ${build_args_block}"
         "    image: \(.image)\n" +
         (if (.env | length) > 0 then
            "    environment:\n" +
-           (.env | to_entries | map("      \(.key): \"\(.value)\"") | join("\n")) + "\n"
+           (.env | to_entries | map("      \(.key): \((.value | tostring | gsub("\\$"; "$$")) | tojson)") | join("\n")) + "\n"
          else "" end) +
         (if (.volumes | length) > 0 then
            "    volumes:\n" +
