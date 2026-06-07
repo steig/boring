@@ -1,0 +1,54 @@
+# .boring/profile.yaml — EmDash (Cloudflare Workers) example.
+#
+# Wrapping a Wrangler/Workers project. Local dev runs workerd via `wrangler
+# dev`; Miniflare simulates D1/KV/R2/Durable Objects in-process, so there are
+# no services: sidecars to declare. Passes schema validation today.
+
+profile_version: "1"
+name: emdash
+
+# Node toolchain. wrangler + workerd are pulled from npm at setup time, so the
+# stock node preset is enough — no custom Dockerfile needed.
+preset: node
+
+# No sidecars: Miniflare simulates D1/KV/R2/Durable Objects in-process under
+# `wrangler dev`. The field is required, so declare it empty.
+services: []
+
+# wrangler dev's default port. The dev container forwards it to the host (and
+# the boring-ui preview iframe can point at it).
+forward_ports: [8787]
+
+env:
+  # Wrangler reads these from the environment; the resolver injects them at
+  # `boring open` time and they never touch disk (ARD-0002). Point them at your
+  # team's actual vault + item names.
+  CLOUDFLARE_ACCOUNT_ID: secret://op://Eng/Cloudflare/account-id
+  CLOUDFLARE_API_TOKEN:  secret://op://Eng/Cloudflare/api-token
+  # Disable wrangler telemetry (also removes one egress destination).
+  WRANGLER_SEND_METRICS: "false"
+
+setup:
+  - npm ci
+
+dev:
+  # --ip 0.0.0.0 is load-bearing: wrangler binds 127.0.0.1 inside the container
+  # by default, which the host port-forward / preview iframe can't reach.
+  command: npx wrangler dev --ip 0.0.0.0 --port 8787
+
+guardrails:
+  # Containment (ARD-0005): a non-engineer can iterate on `wrangler dev` but
+  # cannot ship to production.
+  forbid_commands: ["wrangler deploy"]
+  forbid_branches: [main, production]
+
+# Egress enforcement is OFF while egress.allow is empty/absent. The hosts
+# wrangler needs — registry.npmjs.org plus Cloudflare's anycast api/dash and
+# *.workers.dev — rotate IPs, so they only work cleanly under the SNI-aware
+# filter (ARD-0034), not the current boot-time IP-pinning enforcer. Uncomment
+# once that lands:
+# egress:
+#   allow:
+#     - registry.npmjs.org
+#     - "*.cloudflare.com"
+#     - "*.workers.dev"
