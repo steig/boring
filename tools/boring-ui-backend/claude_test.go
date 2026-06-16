@@ -79,9 +79,21 @@ const fixtureToolErrorResult = `{"type":"stream_event","event":{"type":"message_
 {"type":"result","subtype":"success","is_error":false,"result":"","duration_ms":10,"total_cost_usd":0}
 `
 
+func TestParseClaudeStream_CapturesSessionID(t *testing.T) {
+	emit, _ := captureEmit()
+	// fixtureTurnText's init line carries session_id "s".
+	got, err := parseClaudeStream(strings.NewReader(fixtureTurnText), emit)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got != "s" {
+		t.Errorf("captured session id = %q, want %q", got, "s")
+	}
+}
+
 func TestParseClaudeStream_TextOnlyTurn(t *testing.T) {
 	emit, envs := captureEmit()
-	if err := parseClaudeStream(strings.NewReader(fixtureTurnText), emit); err != nil {
+	if _, err := parseClaudeStream(strings.NewReader(fixtureTurnText), emit); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	types := envTypes(*envs)
@@ -117,7 +129,7 @@ func TestParseClaudeStream_TextOnlyTurn(t *testing.T) {
 
 func TestParseClaudeStream_ToolUseAndFollowUp(t *testing.T) {
 	emit, envs := captureEmit()
-	if err := parseClaudeStream(strings.NewReader(fixtureTurnToolUse), emit); err != nil {
+	if _, err := parseClaudeStream(strings.NewReader(fixtureTurnToolUse), emit); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	types := envTypes(*envs)
@@ -178,7 +190,7 @@ func TestParseClaudeStream_ToolUseAndFollowUp(t *testing.T) {
 
 func TestParseClaudeStream_ErrorResult(t *testing.T) {
 	emit, envs := captureEmit()
-	if err := parseClaudeStream(strings.NewReader(fixtureTurnError), emit); err != nil {
+	if _, err := parseClaudeStream(strings.NewReader(fixtureTurnError), emit); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	types := envTypes(*envs)
@@ -197,7 +209,7 @@ func TestParseClaudeStream_ErrorResult(t *testing.T) {
 
 func TestParseClaudeStream_ToolErrorResultSummary(t *testing.T) {
 	emit, envs := captureEmit()
-	if err := parseClaudeStream(strings.NewReader(fixtureToolErrorResult), emit); err != nil {
+	if _, err := parseClaudeStream(strings.NewReader(fixtureToolErrorResult), emit); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	// Find the tool_result envelope.
@@ -231,7 +243,7 @@ this is not json at all
 {"type":"result","subtype":"success","is_error":false,"result":"ok","duration_ms":1,"total_cost_usd":0}
 `
 	emit, envs := captureEmit()
-	if err := parseClaudeStream(strings.NewReader(in), emit); err != nil {
+	if _, err := parseClaudeStream(strings.NewReader(in), emit); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	types := envTypes(*envs)
@@ -249,7 +261,7 @@ func TestParseClaudeStream_EmptyToolInput(t *testing.T) {
 {"type":"result","subtype":"success","is_error":false,"result":"","duration_ms":1,"total_cost_usd":0}
 `
 	emit, envs := captureEmit()
-	if err := parseClaudeStream(strings.NewReader(in), emit); err != nil {
+	if _, err := parseClaudeStream(strings.NewReader(in), emit); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	var tc ToolCallData
@@ -281,7 +293,7 @@ func TestParseClaudeStream_StopsAtResult(t *testing.T) {
 {"type":"stream_event","event":{"type":"content_block_start","index":99,"content_block":{"type":"text","text":""}}}
 `
 	emit, envs := captureEmit()
-	if err := parseClaudeStream(strings.NewReader(in), emit); err != nil {
+	if _, err := parseClaudeStream(strings.NewReader(in), emit); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	// Last envelope must be turn_complete; nothing after.

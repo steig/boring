@@ -9,7 +9,10 @@
 // Spawn command:
 //
 //	claude --print --output-format=stream-json \
-//	       --include-partial-messages --no-session-persistence --verbose
+//	       --include-partial-messages --verbose [--resume <id>]
+//
+// Sessions are persisted (no --no-session-persistence) so the captured
+// session id can --resume the same conversation on the next turn (ARD-0037).
 //
 // stdin = the user's prompt. stdout = JSONL stream-json events. The wrapper
 // parses each line and emits envelopes onto the broadcaster + thread; the
@@ -108,11 +111,16 @@ func emptyMCPConfigFile() (string, error) {
 	return f.Name(), nil
 }
 
-// allowedClaudeTools is the built-in tool allowlist passed via --allowed-tools.
-// These are the tools that have a sensible affordance in the boring-ui chat:
-// file editing, shell, search, web. Orchestration tools (Task, AskUserQuestion,
-// SendMessage, TaskCreate, etc.) are excluded because the chat UI has no
-// answer surface for them — they'd render as dead-end cards.
+// allowedClaudeTools is the built-in DEFAULT tool allowlist, used when the turn
+// carries no resolved allowlist (TurnSpec.AllowedTools empty). These are the
+// tools that have a sensible affordance in the boring-ui chat: file editing,
+// shell, search, web. Orchestration tools (Task, AskUserQuestion, SendMessage,
+// TaskCreate, etc.) are excluded because the chat UI has no answer surface for
+// them — they'd render as dead-end cards.
+//
+// When a profile resolves its own allowlist (guardrails_translate_tools claude,
+// passed via --allowed-tools), that supersedes this default — ARD-0037 §1's
+// "thread the resolved guardrails through BuildTurnCommand."
 //
 // Defense in depth: even with these excluded server-side, chat.js renders any
 // stray tool calls via a generic fallback rather than dropping them, so the
@@ -122,10 +130,16 @@ var allowedClaudeTools = []string{
 }
 
 // runClaudeTurn spawns the claude CLI with the given prompt and streams its
-// events into the broadcaster + thread. Returns when claude exits or ctx is
-// cancelled. The sessionID is currently unused (--no-session-persistence is
-// always set in v0); it's accepted as a parameter so the call-site is ready
-// for the future "resume the same conversation" capability.
+// events into the broadcaster + thread. Returns the captured claude session id
+// (for the caller to --resume on the next turn) and an error, when claude exits
+// or ctx is cancelled.
+//
+// Session continuity (ARD-0037 CaptureSession/ResumeSession, ARD-0029 §6 gap #3):
+// when resumeID is non-empty, the turn continues that conversation via --resume;
+// otherwise it starts fresh. Either way the session is persisted (we no longer
+// pass --no-session-persistence) so the id we capture from the init line is
+// resumable next turn. boring-ui is one continuous thread per project
+// (ARD-0022), so the provider holds a single id across the process's turns.
 //
 // allowlist is the resolved set of workdir-relative glob patterns for the
 // reactive post-turn path-allowlist enforcement (ARD-0029 §6 gap #1 backstop;
@@ -151,8 +165,15 @@ var allowedClaudeTools = []string{
 // would break the project-context expectation for marketers' chats. The two
 // flags above already eliminate the user-reported leakage (personal MCPs +
 // orchestration tools) without nuking the system prompt.
-func runClaudeTurn(ctx context.Context, workdir, prompt string, allowlist []string, bcast *Broadcaster, thread *Thread, sessionID string) error {
-	_ = sessionID // reserved; --no-session-persistence is always set in v0.
+func runClaudeTurn(ctx context.Context, spec TurnSpec, resumeID string, bcast *Broadcaster, thread *Thread) (string, error) {
+	workdir, prompt, allowlist := spec.Workdir, spec.Prompt, spec.Allowlist
+
+	// Tool allowlist: the resolved per-profile set if the turn carries one,
+	// else the built-in default (ARD-0037 §1).
+	allowedTools := spec.AllowedTools
+	if len(allowedTools) == 0 {
+		allowedTools = allowedClaudeTools
+	}
 
 	emit := &claudeEmitter{bcast: bcast, thread: thread}
 
@@ -168,9 +189,14 @@ func runClaudeTurn(ctx context.Context, workdir, prompt string, allowlist []stri
 		"--print",
 		"--output-format=stream-json",
 		"--include-partial-messages",
-		"--no-session-persistence",
 		"--verbose",
-		"--allowed-tools", strings.Join(allowedClaudeTools, " "),
+		"--allowed-tools", strings.Join(allowedTools, " "),
+	}
+	// Continue the same conversation when we captured an id on a prior turn
+	// (ARD-0022 one-thread-per-project). First turn of the process has no id
+	// and starts fresh; the session persists so the next turn can resume it.
+	if resumeID != "" {
+		args = append(args, "--resume", resumeID)
 	}
 	mcpCfg, mcpErr := emptyMCPConfigFile()
 	if mcpErr != nil {
@@ -194,12 +220,12 @@ func runClaudeTurn(ctx context.Context, workdir, prompt string, allowlist []stri
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		emit.emit(EventTurnComplete, TurnCompleteData{Error: "stdin pipe: " + err.Error()})
-		return fmt.Errorf("claude: stdin pipe: %w", err)
+		return "", fmt.Errorf("claude: stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		emit.emit(EventTurnComplete, TurnCompleteData{Error: "stdout pipe: " + err.Error()})
-		return fmt.Errorf("claude: stdout pipe: %w", err)
+		return "", fmt.Errorf("claude: stdout pipe: %w", err)
 	}
 	// Capture stderr to a buffer so we can include it in error reporting
 	// without polluting the SSE stream.
@@ -208,7 +234,7 @@ func runClaudeTurn(ctx context.Context, workdir, prompt string, allowlist []stri
 
 	if err := cmd.Start(); err != nil {
 		emit.emit(EventTurnComplete, TurnCompleteData{Error: "spawn: " + err.Error()})
-		return fmt.Errorf("claude: start: %w", err)
+		return "", fmt.Errorf("claude: start: %w", err)
 	}
 
 	// Write the prompt + close stdin so claude knows the input is finished.
@@ -226,7 +252,7 @@ func runClaudeTurn(ctx context.Context, workdir, prompt string, allowlist []stri
 	// share the same monotonic sequence as the user_message we already
 	// emitted. Without this, parser-built envelopes restart at evt-1 and
 	// collide with the outer sequence.
-	parseErr := parseClaudeStream(stdout, func(env Envelope) {
+	capturedID, parseErr := parseClaudeStream(stdout, func(env Envelope) {
 		if env.Type == EventTurnComplete {
 			sawResult = true
 		}
@@ -254,19 +280,19 @@ func runClaudeTurn(ctx context.Context, workdir, prompt string, allowlist []stri
 		// have written files before crashing, and those still need policing.
 		runPostTurnEnforcement(workdir, allowlist, bcast, thread)
 		if errors.Is(ctx.Err(), context.Canceled) {
-			return ctx.Err()
+			return capturedID, ctx.Err()
 		}
-		return fmt.Errorf("claude: %w (stderr: %s)", waitErr, stderrTail)
+		return capturedID, fmt.Errorf("claude: %w (stderr: %s)", waitErr, stderrTail)
 	}
 	if parseErr != nil && !sawResult {
 		emit.emit(EventTurnComplete, TurnCompleteData{Error: "parse: " + parseErr.Error()})
 		runPostTurnEnforcement(workdir, allowlist, bcast, thread)
-		return fmt.Errorf("claude: parse: %w", parseErr)
+		return capturedID, fmt.Errorf("claude: parse: %w", parseErr)
 	}
 	// Clean exit. Reactive path-allowlist enforcement runs here per
 	// ARD-0029 §6 gap #1; no-op when allowlist is empty.
 	runPostTurnEnforcement(workdir, allowlist, bcast, thread)
-	return nil
+	return capturedID, nil
 }
 
 // runPostTurnEnforcement is the single call-site for the post-turn allowlist
@@ -279,7 +305,7 @@ func runPostTurnEnforcement(workdir string, allowlist []string, bcast *Broadcast
 	if len(allowlist) == 0 {
 		return
 	}
-	emitter := &broadcasterPolicyEmitter{bcast: bcast, thread: thread}
+	emitter := &broadcasterPolicyEmitter{bcast: bcast, thread: thread, agent: claudeAgentName}
 	blocked, err := enforceAllowlist(workdir, allowlist, emitter)
 	if err != nil {
 		log.Printf("claude: post-turn enforcement: %v", err)
@@ -317,6 +343,11 @@ type streamLine struct {
 	Subtype string          `json:"subtype,omitempty"`
 	Event   json.RawMessage `json:"event,omitempty"`
 	Message json.RawMessage `json:"message,omitempty"`
+
+	// SessionID rides on the `system`/init line (and the `result` line); we
+	// capture it so the next turn can --resume the same conversation (ARD-0037
+	// CaptureSession/ResumeSession).
+	SessionID string `json:"session_id,omitempty"`
 
 	// Result-only fields.
 	IsError    bool            `json:"is_error,omitempty"`
@@ -391,14 +422,16 @@ type blockAccum struct {
 }
 
 // parseClaudeStream reads JSONL from r and emits envelopes via emit. Returns
-// nil on clean EOF, an error on scanner failure. emit is called for every
-// envelope the parser builds; the caller is responsible for the broadcaster
-// + thread side effects.
+// the captured claude session id (from the `system`/init line; "" if none seen)
+// and an error only on scanner failure. emit is called for every envelope the
+// parser builds; the caller is responsible for the broadcaster + thread side
+// effects.
 //
 // This function is the seam for testing: feed in fixture JSONL, capture
 // the envelopes, assert the sequence + shapes. runClaudeTurn glues this to
 // the spawn + emit-and-persist.
-func parseClaudeStream(r io.Reader, emit func(Envelope)) error {
+func parseClaudeStream(r io.Reader, emit func(Envelope)) (string, error) {
+	var sessionID string // first session_id seen, for --resume next turn
 	// Helper for building envelopes outside the broadcaster (the parser is
 	// pure — the caller in runClaudeTurn re-stamps IDs via thread/broadcast
 	// when it actually publishes, but for unit testing we want envelopes
@@ -439,8 +472,11 @@ func parseClaudeStream(r io.Reader, emit func(Envelope)) error {
 		switch line.Type {
 
 		case "system":
-			// init / status / hook events: ignore. They're protocol-level
-			// chatter that the chat UI doesn't render in v0.
+			// init / status / hook events: no UI affordance in v0, but the
+			// init line carries the session_id we need to --resume next turn.
+			if sessionID == "" && line.SessionID != "" {
+				sessionID = line.SessionID
+			}
 
 		case "stream_event":
 			var ev streamEvent
@@ -578,9 +614,14 @@ func parseClaudeStream(r io.Reader, emit func(Envelope)) error {
 				}
 			}
 			emitEnv(EventTurnComplete, td)
+			// The result line also carries session_id — capture as a fallback
+			// if the init line didn't (or wasn't seen).
+			if sessionID == "" && line.SessionID != "" {
+				sessionID = line.SessionID
+			}
 			// `result` is the documented turn terminator. Stop reading; the
 			// caller will reap the process via Wait().
-			return nil
+			return sessionID, nil
 
 		case "rate_limit_event":
 			// Informational; could surface as a toast later. v0: ignore.
@@ -592,9 +633,9 @@ func parseClaudeStream(r io.Reader, emit func(Envelope)) error {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("scan: %w", err)
+		return sessionID, fmt.Errorf("scan: %w", err)
 	}
-	return nil
+	return sessionID, nil
 }
 
 // summarizeToolResult builds the result_summary string from the inner

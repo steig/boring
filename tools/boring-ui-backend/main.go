@@ -46,6 +46,7 @@ func main() {
 		previewURLs  = flag.String("preview-urls", "", "multiple preview tabs (ARD-0035): comma-separated name=port=upstream entries, each with its own dedicated-origin proxy on the given host port. Mutually exclusive with --preview-url/--preview-port.")
 		terminalURL  = flag.String("terminal-url", "", "absolute URL the LEFT-pane terminal iframe loads (e.g. ttyd serving claude); empty renders the SSE chat UI instead")
 		allowedPaths = flag.String("allowed-paths", "", "comma-separated glob patterns relative to workdir; files modified by the AI outside these patterns are reverted via git after each turn. Empty disables enforcement.")
+		allowedTools = flag.String("allowed-tools", "", "comma-separated tool allowlist passed to the harness per turn (resolved guardrails, already translated for this harness via guardrails_translate_tools). Empty uses the provider's built-in default.")
 	)
 	flag.Parse()
 
@@ -87,12 +88,12 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*socketPath, *slug, *workdir, *threadsDir, previewTabs, *terminalURL, *provider, parsedAllowed); err != nil {
+	if err := run(*socketPath, *slug, *workdir, *threadsDir, previewTabs, *terminalURL, *provider, parsedAllowed, parseAllowedPaths(*allowedTools)); err != nil {
 		log.Fatalf("boring-ui-backend: %v", err)
 	}
 }
 
-func run(socketPath, slug, workdir, threadsDir string, previewTabs []PreviewTab, terminalURL, provider string, allowedPaths []string) error {
+func run(socketPath, slug, workdir, threadsDir string, previewTabs []PreviewTab, terminalURL, provider string, allowedPaths, allowedTools []string) error {
 	// Set up the socket directory + remove any stale socket from a prior run.
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return fmt.Errorf("create socket dir: %w", err)
@@ -111,6 +112,7 @@ func run(socketPath, slug, workdir, threadsDir string, previewTabs []PreviewTab,
 	defer b.Close()
 
 	srv := NewServer(slug, workdir, "", terminalURL, provider, allowedPaths, b, thread)
+	srv.AllowedTools = allowedTools
 
 	// Dedicated-origin preview proxies (ARD-0033 + ARD-0035 tabs): one reverse
 	// proxy per declared tab, each on its own host port, forwarding to that
