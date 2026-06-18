@@ -11,6 +11,12 @@
 (function () {
   "use strict";
 
+  // SW registration lives here (not an inline <script>) so the strict
+  // proxy-owned CSP (script-src 'self') doesn't block it.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/assets/sw.js").catch(() => {});
+  }
+
   const KNOWN_STATUSES = ["running", "starting", "stopped", "error"];
   const REFRESH_MS = 4000;
   const STORE_KEY = "boring.cockpit.tabs.v1";

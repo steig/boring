@@ -260,7 +260,8 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Content-Security-Policy",
 		"default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "+
-			"connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+			"connect-src 'self'; frame-src 'self'; manifest-src 'self'; worker-src 'self'; "+
+			"frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
