@@ -111,6 +111,80 @@ func TestProxyRouteToUnixSocket(t *testing.T) {
 	}
 }
 
+// TestProxyAllowsSameOriginFraming — the cockpit shell embeds /<slug>/ in a
+// same-origin iframe (ARD-0041). A backend that sends X-Frame-Options: DENY and
+// a CSP frame-ancestors 'none' must come back through the proxy with the frame
+// block relaxed: X-Frame-Options dropped, frame-ancestors rewritten to 'self',
+// and the rest of the CSP preserved.
+func TestProxyAllowsSameOriginFraming(t *testing.T) {
+	sockDir := testSocketDir(t)
+	sock := filepath.Join(sockDir, "f.sock")
+
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer ln.Close()
+	backend := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+		_, _ = io.WriteString(w, "ok")
+	})}
+	go backend.Serve(ln)
+	defer backend.Shutdown(context.Background())
+
+	tmp := t.TempDir()
+	regPath := filepath.Join(tmp, "registry.json")
+	regData := registryFile{Projects: []Project{{Slug: "framed", Status: "running", Socket: sock}}}
+	b, _ := json.Marshal(regData)
+	_ = os.WriteFile(regPath, b, 0o644)
+	reg, _ := NewRegistry(regPath)
+
+	router := NewRouter(reg, nil, true)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/framed/")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if xfo := resp.Header.Get("X-Frame-Options"); xfo != "" {
+		t.Errorf("X-Frame-Options not stripped: %q", xfo)
+	}
+	csp := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "frame-ancestors 'self'") {
+		t.Errorf("frame-ancestors not rewritten to 'self'; CSP = %q", csp)
+	}
+	if strings.Contains(csp, "frame-ancestors 'none'") {
+		t.Errorf("frame-ancestors 'none' survived; CSP = %q", csp)
+	}
+	if !strings.Contains(csp, "default-src 'self'") {
+		t.Errorf("non-frame CSP directive was dropped; CSP = %q", csp)
+	}
+}
+
+// TestRewriteFrameAncestors covers the CSP directive rewriter directly:
+// existing frame-ancestors are replaced, other directives preserved, and a
+// missing directive is appended.
+func TestRewriteFrameAncestors(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"frame-ancestors 'none'", " frame-ancestors 'self'"},
+		{"default-src 'self'; frame-ancestors https://x.example", "default-src 'self'; frame-ancestors 'self'"},
+		{"default-src 'self'", "default-src 'self'; frame-ancestors 'self'"},
+		{"default-src 'self';", "default-src 'self'; frame-ancestors 'self'"},
+	}
+	for _, c := range cases {
+		if got := rewriteFrameAncestors(c.in); got != c.want {
+			t.Errorf("rewriteFrameAncestors(%q) = %q; want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // TestProxyUnknownProject404s ensures missing-slug requests don't crash.
 func TestProxyUnknownProject404s(t *testing.T) {
 	tmp := t.TempDir()
