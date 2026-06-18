@@ -20,27 +20,37 @@ $ boring open .
 [OK] Ready. Attach your editor, or:  devcontainer exec --workspace-folder . -- bash
 ```
 
-## Status — v0.6.0-dev
+## Status — v0.14.0
 
-Code surface covers [ARD-0008](docs/ards/ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md)'s v0.3 through v0.6 slices end-to-end. v1.0 polish (brew formula, marketing final pass, broader real-world dogfood) is the gap to a tagged release.
+[ARD-0008](docs/ards/ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md)'s sandbox core (v0.3–v0.6) ships end-to-end, and on top of it the **boring-ui browser surface** plus a run of security hardening (egress floor, trust-anchor enforcement, audit attribution). v1.0 polish — brew/winget packaging, broader external dogfood — is the gap to a tagged release.
 
-What works today:
+### The sandbox core
 
 - **Five curated presets** (`shopify`, `django-node`, `python`, `node`, `node-postgres`) — toolchain versions parameterizable via `preset_version:`. Or bring your own Dockerfile via `stack.dockerfile:`.
 - **Multi-service compose** — declare sidecars (postgres, redis, mongo, anything compose accepts), top-level named volumes, healthcheck-aware auto-wired `depends_on`.
-- **Secret URI resolution at container start** — `secret://op://...`, `secret://keychain:...`, `secret://vault://...`, `secret://aws-sm:...`, `secret://dbx-vault:...`, `secret://env:...`, `secret://file:...`. Resolved in memory; never written to compose or devcontainer.json.
-- **Guardrails codegen** — `forbid_branches:` → pre-push hook, `forbid_commands:` → PATH-shadowing wrappers, `allowed_claude_tools:` → merged into Claude `settings.json`. All host-generated, bind-mounted RO into the container so an in-container agent can't disable them.
-- **Audit log + prompt tracing** — FIFO + host-side collector for tamper-resistance. Tiered visibility: security events shared across the team, prompt content per-user by default with opt-in shared.
-- **Egress enforcement** (`egress.allow:` + iptables-in-container) **with cross-platform `--learn-mode`** that observes a session and proposes the allowlist. Works on Mac+Orbstack via a ulogd2 sidecar.
-- **`boring run "<prompt>" --profile <name>`** — headless one-shot Claude in a fresh container with the profile's sandbox shape.
-- **`boring restore [<path>] [--refresh]`** — declarative `restore:` profile field pipes prod-shape data through `dbx restore --transform=<sanitizer> --into <sidecar>` (requires dbx with PR #42; live integration when dbx cuts a release).
-- **`boring audit security <profile>` / `boring audit prompts <profile>`** — read the JSONL audit logs.
-- **`boring doctor`** — pre-flights docker, devcontainer CLI, dbx (with feature-flag check), jq, yq (mikefarah variant), plus optional secret-resolver CLIs.
+- **Secret URI resolution at container start** — `secret://op://…`, `keychain:`, `vault://`, `aws-sm:`, `dbx-vault://`, `env:`, `file:`. Resolved in memory; never written to compose or devcontainer.json.
+- **Guardrails codegen** — `forbid_branches:` → pre-push hook, `forbid_commands:` → PATH-shadowing wrappers, `allowed_tools:` / `allowed_paths:` → merged into the agent's settings (per-harness translation; ARD-0026). A per-profile `CLAUDE.md` **and** `AGENTS.md` are generated too (ARD-0017/0028). All host-generated and bind-mounted read-only so an in-container agent can't disable them.
+- **Egress enforcement** (`egress.allow:` + iptables-in-container) with cross-platform `--learn-mode`, plus an **always-on floor** — cloud-metadata/link-local and `cross_sandbox`/RFC1918 internal-network blocks that hold even under `boring open --unsafe-network` (ARD-0011/0015/0036).
+- **VS Code setup** — `extensions:` / `extension_settings:` baked into the generated `devcontainer.json` (ARD-0018).
+- **Audit log + prompt tracing** — FIFO + host-side collector for tamper-resistance; tiered visibility (security events team-shared, prompt content per-user); per-agent attribution + `boring audit … --agent <name>` (ARD-0010/0027).
+- **`data_sensitivity:` assertion + host/machine profile overlays** for per-environment tweaks within an enforced allowlist (ARD-0039/0040).
+
+### The boring-ui surface (browser)
+
+- **`boring open --ui` + `boring proxy`** — a host proxy (`boring.local`, mkcert TLS, per-user token) serves a browser chat and a **multi-project "mission control" dashboard** into each project's sandbox, so a non-engineer gets a URL with no terminal (ARD-0019/0021/0022). Live previews, diff cards, per-action undo, and an embedded in-container terminal.
+
+### Commands
+
+- **`boring run "<prompt>" --profile <name>`** — headless one-shot agent in a fresh sandbox; distinct exit codes for "agent produced nothing" vs "agent errored" so CI can tell them apart (ARD-0013/0038).
+- **`boring restore [<path>] [--refresh]`** — declarative `restore:` field pipes prod-shape data through `dbx restore --transform=<sanitizer> --into <sidecar>` (requires `dbx` ≥ 0.11.0).
+- **`boring audit security|prompts <profile> [--agent <name>]`** — read the JSONL audit logs.
+- **`boring doctor`** — pre-flights docker, devcontainer CLI, dbx (version-gated), jq, yq (mikefarah variant), optional secret-resolver CLIs, and repo-side safety nets — branch protection + PR templates (ARD-0016).
 
 What's deferred:
 
 - **`boring open <git-url>`** — URL-cloning path; today clone manually then `boring open <local-path>`.
-- **dbx PR release** — live `boring restore` requires `dbx` ≥ a version that includes PR #42 (`--transform`, `--into`). Landed on dbx `main`; awaiting release cut.
+- **Remote / hosted boring** — trusted-share + team-hosted access is designed (ARD-0042) but gated on completing the egress internal-network blocks; public multi-tenant SaaS is parked.
+- **Native/Ghostty cockpit, multi-thread chat + `/resume`** — deferred behind explicit triggers (ARD-0041) and a pending ARD-0022 revisit.
 - **brew + winget packaging** — v1.0 polish.
 
 ## Install
@@ -82,11 +92,13 @@ Optional, only if your profile uses the matching `!secret` URI scheme:
 
 ## First profile
 
-Pick one of the [`examples/`](examples/) as a starting point and drop it into your repo's `.boring/profile.yaml`. Three are shipped:
+Pick one of the [`examples/`](examples/) as a starting point and drop it into your repo's `.boring/profile.yaml`. Shipped:
 
 - [`examples/minimal/`](examples/minimal/) — smallest possible profile (Shopify preset, no sidecars).
 - [`examples/django-postgres/`](examples/django-postgres/) — Django + Postgres with secret URIs + setup hook.
 - [`examples/node-with-redis/`](examples/node-with-redis/) — Node + Redis sidecar, no DB.
+- [`examples/emdash/`](examples/emdash/) — Cloudflare Workers (Wrangler) on `preset: node`, no sidecars.
+- [`examples/immich/`](examples/immich/) — contributor sandbox for [Immich](https://github.com/immich-app/immich) (NestJS + SvelteKit) with its real Postgres + Valkey sidecars.
 
 Then:
 
@@ -112,29 +124,26 @@ Built around three priorities, in order: **security > practicality > time-to-run
 
 ## Architecture & decisions
 
-Every material design decision is an **ARD** (Architectural Decision Record) under [`docs/ards/`](docs/ards/). Full index lives at [steig.github.io/boring/ards/](https://steig.github.io/boring/ards/). The current set:
+Every material design decision is an **ARD** (Architectural Decision Record) under [`docs/ards/`](docs/ards/) — **42 and counting**. The always-current index lives on the docs site at [steig.github.io/boring/ards/](https://steig.github.io/boring/ards/) and in [`docs/ards/README.md`](docs/ards/README.md). The foundational decisions:
 
 | ARD | Subject |
 |---|---|
 | [0001](docs/ards/ard-0001-v1-architecture.md) | Full v1 architecture |
 | [0002](docs/ards/ard-0002-dbx-as-runtime-dependency.md) | dbx as runtime dependency; boring owns no secret storage |
-| [0003](docs/ards/ard-0003-devcontainer-cli-as-runtime-dependency.md) | `devcontainer` CLI for container lifecycle |
-| [0004](docs/ards/ard-0004-shopify-first-as-dogfood-path.md) | Shopify-first as the v1 dogfood path |
 | [0005](docs/ards/ard-0005-security-model-inversion.md) | Security model: contain non-engineer + AI from prod |
 | [0006](docs/ards/ard-0006-profile-is-the-trust-anchor.md) | Profile is the trust anchor; in-container agents cannot modify `.boring/*` |
-| [0007](docs/ards/ard-0007-django-node-and-multi-service-compose.md) | `preset: django-node`, multi-service compose, schema versioning |
 | [0008](docs/ards/ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md) | v0.3 → v1.0 release plan + thesis evolution |
 | [0009](docs/ards/ard-0009-guardrails-codegen-architecture.md) | Guardrails codegen architecture |
 | [0010](docs/ards/ard-0010-audit-log-and-prompt-tracing-infrastructure.md) | Audit log + prompt tracing infrastructure |
 | [0011](docs/ards/ard-0011-egress-enforcement-via-iptables.md) | Egress enforcement via iptables-in-container + `--learn-mode` |
-| [0012](docs/ards/ard-0012-dbx-restore-integration.md) | dbx restore integration via the `restore:` profile field |
-| [0013](docs/ards/ard-0013-headless-boring-run.md) | Headless `boring run` |
-| [0014](docs/ards/ard-0014-preset-versioning-and-v10-preset-list.md) | Preset versioning + canonical v1.0 preset list |
-| [0015](docs/ards/ard-0015-ulogd2-sidecar-for-cross-platform-learn-mode.md) | ulogd2 sidecar (cross-platform `--learn-mode`) |
-| [0016](docs/ards/ard-0016-repo-side-safety-nets-as-prerequisite.md) | Repo-side safety nets (branch protection, PR templates) as a boring prerequisite |
-| [0017](docs/ards/ard-0017-agent-workflow-rules-derived-from-guardrails.md) | Agent workflow rules derived from guardrails |
+| [0019](docs/ards/ard-0019-boring-ui-non-engineer-browser-surface.md) | boring-ui: the non-engineer browser surface |
+| [0021](docs/ards/ard-0021-boring-ui-host-proxy-and-project-picker.md) | boring-ui: host proxy + project picker |
+| [0022](docs/ards/ard-0022-boring-ui-session-and-trust-model.md) | boring-ui: session + trust model |
+| [0036](docs/ards/ard-0036-egress-baseline-deny-categories.md) | Egress baseline deny-categories (metadata floor + RFC1918) |
+| [0041](docs/ards/ard-0041-multi-agent-cockpit-on-web-substrate.md) | Multi-agent "mission control" cockpit on the web substrate |
+| [0042](docs/ards/ard-0042-remote-hosted-boring-access-model.md) | Remote / hosted boring access model |
 
-The convention for writing new ARDs (full vs. mini, numbering, supersession, when to write one) is in [`docs/ards/README.md`](docs/ards/README.md). New design decisions get an ARD at the time of the decision, not after.
+ARDs 0003–0040 cover the rest — presets, `restore`, codegen internals, the audit/egress mechanics, and the boring-ui build-out; see the full index. The convention for writing new ARDs (full vs. mini, numbering, supersession, when to write one) is in [`docs/ards/README.md`](docs/ards/README.md). New design decisions get an ARD at the time of the decision, not after.
 
 ## Status — honest version
 
