@@ -323,6 +323,7 @@ type PolicyEmitter interface {
 type broadcasterPolicyEmitter struct {
 	bcast  *Broadcaster
 	thread *Thread
+	agent  string // harness whose turn produced the blocked write (ARD-0027)
 }
 
 func (e *broadcasterPolicyEmitter) EmitPolicyBlocked(path, reason string) {
@@ -335,6 +336,10 @@ func (e *broadcasterPolicyEmitter) EmitPolicyBlocked(path, reason string) {
 	}
 	_ = e.thread.Append(env)
 	e.bcast.Publish(env)
+	// A blocked write is an ARD-0010 security event with no native-hook route
+	// (it originates here, not inside the agent). Mirror it to the audit FIFO
+	// so `boring audit security` sees the gate firing (ARD-0037 EmitAudit).
+	emitAudit("guardrail_violation", e.agent, PolicyBlockedData{Path: path, Reason: reason})
 }
 
 // enforceAllowlist runs the post-turn pass. If allowlist is empty, it's a

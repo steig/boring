@@ -16,8 +16,8 @@ import (
 
 func newTestServer(t *testing.T, mock bool) (*Server, *httptest.Server) {
 	t.Helper()
-	provider := "claude" // arbitrary non-mock placeholder; tests of the claude
-	if mock {            // path inject TurnRunner so this never spawns claude.
+	provider := "claude" // non-mock placeholder; claude-path tests override
+	if mock {            // s.Agent with a stub so this never spawns the real CLI.
 		provider = "mock"
 	}
 	return newTestServerProvider(t, provider)
@@ -180,16 +180,16 @@ func TestIndexPreviewHeaderRendersWhenURLSet(t *testing.T) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	mustContain := []string{
-		`class="preview-header"`,         // header strip
+		`class="preview-header"`,              // header strip
 		`class="preview-btn preview-refresh"`, // refresh button (class, not id — N panes)
 		`class="preview-btn preview-open"`,    // open-in-new-tab link
-		`href="http://localhost:3000/"`,  // link target
-		`target="_blank"`,                // opens new tab
-		`rel="noopener noreferrer"`,      // safe link
-		`localhost:3000/`,                // muted URL display (scheme stripped)
-		`class="preview-url"`,            // editable address input
-		`class="preview-tabs"`,           // tab strip (ARD-0035)
-		`id="preview-tab-add"`,           // runtime add-tab button
+		`href="http://localhost:3000/"`,       // link target
+		`target="_blank"`,                     // opens new tab
+		`rel="noopener noreferrer"`,           // safe link
+		`localhost:3000/`,                     // muted URL display (scheme stripped)
+		`class="preview-url"`,                 // editable address input
+		`class="preview-tabs"`,                // tab strip (ARD-0035)
+		`id="preview-tab-add"`,                // runtime add-tab button
 	}
 	for _, want := range mustContain {
 		if !bytes.Contains(body, []byte(want)) {
@@ -295,6 +295,78 @@ func TestMessagesRejectsBadJSON(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status=%d want 400", resp.StatusCode)
+	}
+}
+
+// recordingProvider is a test AgentProvider that captures the TurnSpec it was
+// handed instead of running anything — the stub the claude-dispatch path needs.
+type recordingProvider struct{ seen chan TurnSpec }
+
+func (*recordingProvider) Name() string { return "recording" }
+
+func (p *recordingProvider) RunTurn(_ context.Context, spec TurnSpec, _ *Broadcaster, _ *Thread) error {
+	p.seen <- spec
+	return nil
+}
+
+// TestMessagesDispatchToAgent verifies POST /api/messages threads the resolved
+// TurnSpec into the injected AgentProvider — the seam ARD-0037 formalizes and
+// the removed TurnRunner field never had a test for.
+func TestMessagesDispatchToAgent(t *testing.T) {
+	s, srv := newTestServerProvider(t, "claude")
+	seen := make(chan TurnSpec, 1)
+	s.Agent = &recordingProvider{seen: seen}
+
+	resp, err := http.Post(srv.URL+"/api/messages", "application/json",
+		strings.NewReader(`{"text":"make the hero bigger"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+
+	select {
+	case spec := <-seen:
+		if spec.Prompt != "make the hero bigger" {
+			t.Errorf("prompt=%q", spec.Prompt)
+		}
+		if spec.Workdir == "" {
+			t.Errorf("workdir not threaded into spec")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("agent never invoked")
+	}
+}
+
+// TestMessagesThreadsGuardrailsIntoSpec verifies the resolved tool + path
+// allowlists on the Server reach the provider via TurnSpec (ARD-0037 §1's
+// "thread the resolved guardrails through BuildTurnCommand").
+func TestMessagesThreadsGuardrailsIntoSpec(t *testing.T) {
+	s, srv := newTestServerProvider(t, "claude")
+	s.AllowedTools = []string{"Read", "Grep"}
+	s.AllowedPaths = []string{"web/src/**"}
+	seen := make(chan TurnSpec, 1)
+	s.Agent = &recordingProvider{seen: seen}
+
+	resp, err := http.Post(srv.URL+"/api/messages", "application/json",
+		strings.NewReader(`{"text":"hi"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case spec := <-seen:
+		if strings.Join(spec.AllowedTools, ",") != "Read,Grep" {
+			t.Errorf("AllowedTools=%v want [Read Grep]", spec.AllowedTools)
+		}
+		if strings.Join(spec.Allowlist, ",") != "web/src/**" {
+			t.Errorf("Allowlist=%v want [web/src/**]", spec.Allowlist)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("agent never invoked")
 	}
 }
 
@@ -568,15 +640,15 @@ func TestIndexPreviewMultipleTabs(t *testing.T) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	for _, want := range []string{
-		`class="preview-tabs"`,                          // strip
-		`data-pane="0"`, `data-pane="1"`,                // two panes/tabs
-		`>app</button>`, `>docs</button>`,               // tab labels
-		`data-frame-url="http://127.0.0.1:8700/"`,       // pane 0 proxy
-		`data-frame-url="http://127.0.0.1:8701/"`,       // pane 1 proxy
-		`src="http://127.0.0.1:8700/"`,                  // iframe 0
-		`src="http://127.0.0.1:8701/"`,                  // iframe 1
-		`data-upstream="http://localhost:8788/"`,        // pane 1 upstream
-		`id="preview-tab-add"`,                          // runtime add button
+		`class="preview-tabs"`,           // strip
+		`data-pane="0"`, `data-pane="1"`, // two panes/tabs
+		`>app</button>`, `>docs</button>`, // tab labels
+		`data-frame-url="http://127.0.0.1:8700/"`, // pane 0 proxy
+		`data-frame-url="http://127.0.0.1:8701/"`, // pane 1 proxy
+		`src="http://127.0.0.1:8700/"`,            // iframe 0
+		`src="http://127.0.0.1:8701/"`,            // iframe 1
+		`data-upstream="http://localhost:8788/"`,  // pane 1 upstream
+		`id="preview-tab-add"`,                    // runtime add button
 	} {
 		if !bytes.Contains(body, []byte(want)) {
 			t.Errorf("multi-tab preview missing %q in:\n%s", want, string(body[:min(1400, len(body))]))

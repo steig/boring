@@ -51,8 +51,8 @@ type Server struct {
 	PreviewFrameURL string       // back-compat: single dedicated-origin frame URL (ARD-0033) paired with PreviewURL.
 	PreviewTabs     []PreviewTab // declared preview tabs; when non-empty, supersedes PreviewURL/PreviewFrameURL.
 	TerminalURL     string       // absolute URL the LEFT-pane iframe loads when set (replaces chat thread w/ embedded terminal, e.g. ttyd serving claude); empty -> SSE chat UI
-	Provider        string       // "mock" | "claude" — selects the turn runner in handleMessages
 	AllowedPaths    []string     // resolved workdir-relative glob set for reactive path-allowlist enforcement (ARD-0029 §6 gap #1); empty -> no enforcement
+	AllowedTools    []string     // resolved tool allowlist (translated for the harness) threaded into each turn (ARD-0037 §1); empty -> provider default
 	Broadcaster     *Broadcaster
 	Thread          *Thread
 
@@ -62,12 +62,11 @@ type Server struct {
 	// before lib/saver.sh lands.
 	SaveCmd []string
 
-	// TurnRunner overrides the function called to run an AI turn for the
-	// "claude" provider. Tests inject a stub here; production code leaves
-	// it nil and dispatches to runClaudeTurn. The allowlist parameter
-	// carries the resolved AllowedPaths so the runner can perform reactive
-	// enforcement after each turn (ARD-0029 §6 gap #1).
-	TurnRunner func(ctx context.Context, workdir, prompt string, allowlist []string, bcast *Broadcaster, thread *Thread, sessionID string) error
+	// Agent is the AgentProvider that runs each turn (ARD-0037). NewServer
+	// resolves it from the provider name; tests may override it with a stub
+	// after construction to exercise the claude dispatch path without
+	// spawning the real CLI.
+	Agent AgentProvider
 }
 
 // NewServer constructs a Server with sensible defaults. provider must be
@@ -81,11 +80,11 @@ func NewServer(slug, workdir, previewURL, terminalURL, provider string, allowedP
 		Workdir:      workdir,
 		PreviewURL:   previewURL,
 		TerminalURL:  terminalURL,
-		Provider:     provider,
 		AllowedPaths: allowedPaths,
 		Broadcaster:  b,
 		Thread:       t,
 		SaveCmd:      []string{"boring", "save"},
+		Agent:        newProvider(provider),
 	}
 }
 
@@ -356,23 +355,17 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// once a turn starts, we play it to completion and the SSE stream gets
 	// the rest on reconnect via hydration).
 	turnCtx := context.Background()
-	switch s.Provider {
-	case "claude":
-		runner := s.TurnRunner
-		if runner == nil {
-			runner = runClaudeTurn
-		}
-		go func() {
-			if err := runner(turnCtx, s.Workdir, req.Text, s.AllowedPaths, s.Broadcaster, s.Thread, s.Slug); err != nil {
-				log.Printf("claude turn: %v", err)
-			}
-		}()
-	case "mock":
-		fallthrough
-	default:
-		go (&MockEmitter{Broadcaster: s.Broadcaster, Thread: s.Thread}).
-			MockTurn(turnCtx, req.Text)
+	spec := TurnSpec{
+		Workdir:      s.Workdir,
+		Prompt:       req.Text,
+		Allowlist:    s.AllowedPaths,
+		AllowedTools: s.AllowedTools,
 	}
+	go func() {
+		if err := s.Agent.RunTurn(turnCtx, spec, s.Broadcaster, s.Thread); err != nil {
+			log.Printf("%s turn: %v", s.Agent.Name(), err)
+		}
+	}()
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"accepted":true}`))
 }
