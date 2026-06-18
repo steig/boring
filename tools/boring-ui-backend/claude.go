@@ -219,12 +219,12 @@ func runClaudeTurn(ctx context.Context, spec TurnSpec, resumeID string, bcast *B
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		emit.emit(EventTurnComplete, TurnCompleteData{Error: "stdin pipe: " + err.Error()})
+		emit.emit(EventTurnComplete, TurnCompleteData{Verdict: VerdictNonzeroExit, Error: "stdin pipe: " + err.Error()})
 		return "", fmt.Errorf("claude: stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		emit.emit(EventTurnComplete, TurnCompleteData{Error: "stdout pipe: " + err.Error()})
+		emit.emit(EventTurnComplete, TurnCompleteData{Verdict: VerdictNonzeroExit, Error: "stdout pipe: " + err.Error()})
 		return "", fmt.Errorf("claude: stdout pipe: %w", err)
 	}
 	// Capture stderr to a buffer so we can include it in error reporting
@@ -233,7 +233,7 @@ func runClaudeTurn(ctx context.Context, spec TurnSpec, resumeID string, bcast *B
 	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Start(); err != nil {
-		emit.emit(EventTurnComplete, TurnCompleteData{Error: "spawn: " + err.Error()})
+		emit.emit(EventTurnComplete, TurnCompleteData{Verdict: VerdictNonzeroExit, Error: "spawn: " + err.Error()})
 		return "", fmt.Errorf("claude: start: %w", err)
 	}
 
@@ -275,7 +275,7 @@ func runClaudeTurn(ctx context.Context, spec TurnSpec, resumeID string, bcast *B
 		_ = killGroup(cmd)
 		stderrTail := tailString(stderrBuf.String(), 400)
 		msg := fmt.Sprintf("claude exited: %v; stderr: %s", waitErr, stderrTail)
-		emit.emit(EventTurnComplete, TurnCompleteData{Error: msg})
+		emit.emit(EventTurnComplete, TurnCompleteData{Verdict: VerdictNonzeroExit, Error: msg})
 		// Even on abnormal exit, run the post-turn enforcement: claude may
 		// have written files before crashing, and those still need policing.
 		runPostTurnEnforcement(workdir, allowlist, bcast, thread)
@@ -285,7 +285,7 @@ func runClaudeTurn(ctx context.Context, spec TurnSpec, resumeID string, bcast *B
 		return capturedID, fmt.Errorf("claude: %w (stderr: %s)", waitErr, stderrTail)
 	}
 	if parseErr != nil && !sawResult {
-		emit.emit(EventTurnComplete, TurnCompleteData{Error: "parse: " + parseErr.Error()})
+		emit.emit(EventTurnComplete, TurnCompleteData{Verdict: VerdictNonzeroExit, Error: "parse: " + parseErr.Error()})
 		runPostTurnEnforcement(workdir, allowlist, bcast, thread)
 		return capturedID, fmt.Errorf("claude: parse: %w", parseErr)
 	}
@@ -432,6 +432,9 @@ type blockAccum struct {
 // the spawn + emit-and-persist.
 func parseClaudeStream(r io.Reader, emit func(Envelope)) (string, error) {
 	var sessionID string // first session_id seen, for --resume next turn
+	// Verdict inputs (ARD-0038): a turn with zero ai_text AND zero tool_call is
+	// agent_no_output, even on a clean `result`. Counted across the whole turn.
+	var aiTextCount, toolCallCount int
 	// Helper for building envelopes outside the broadcaster (the parser is
 	// pure — the caller in runClaudeTurn re-stamps IDs via thread/broadcast
 	// when it actually publishes, but for unit testing we want envelopes
@@ -543,6 +546,7 @@ func parseClaudeStream(r io.Reader, emit func(Envelope)) (string, error) {
 						Tool: acc.toolName,
 						Args: json.RawMessage(inputRaw),
 					})
+					toolCallCount++
 				}
 				// Text blocks: defer to the `assistant` line which carries
 				// the full text. Drop here.
@@ -566,6 +570,7 @@ func parseClaudeStream(r io.Reader, emit func(Envelope)) (string, error) {
 			for _, c := range am.Message.Content {
 				if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
 					emitEnv(EventAIText, AITextData{Text: c.Text})
+					aiTextCount++
 				}
 				// thinking / tool_use blocks: already handled via the
 				// stream_event path. We could fall back here if streaming
@@ -612,6 +617,17 @@ func parseClaudeStream(r io.Reader, emit func(Envelope)) (string, error) {
 				} else {
 					td.Error = "claude reported error (subtype=" + line.Subtype + ")"
 				}
+			}
+			// Classify the turn (ARD-0038 §1/§2). An error result is agent_error;
+			// a clean result that produced no prose and no tool calls is
+			// agent_no_output (the "exit 0, did nothing" class); otherwise ok.
+			switch {
+			case td.Error != "":
+				td.Verdict = VerdictAgentError
+			case aiTextCount == 0 && toolCallCount == 0:
+				td.Verdict = VerdictAgentNoOutput
+			default:
+				td.Verdict = VerdictOK
 			}
 			emitEnv(EventTurnComplete, td)
 			// The result line also carries session_id — capture as a fallback
