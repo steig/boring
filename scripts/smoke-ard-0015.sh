@@ -210,6 +210,67 @@ else
   fail "unsafe mode not wired in install-egress"
 fi
 
+# ARD-0036 cross_sandbox + RFC1918 (script-inspection; the kernel block is the
+# Docker-layer/human verification step). On the success path the subnet is
+# DROPped (after sidecar/resolver carve-outs); the ONLY blanket `-d $NET_CIDR -j
+# ACCEPT` that remains is the fail-open fallback, restored so an unresolved
+# sidecar can't sever dev -> postgres. So: exactly one NET_CIDR ACCEPT (fail-open)
+# and one NET_CIDR DROP (cross_sandbox).
+nca="$(grep -cE '\-d "\$NET_CIDR" -j ACCEPT' "$install_egress")"
+ncd="$(grep -cE '\-d "\$NET_CIDR" -j DROP' "$install_egress")"
+if [ "$nca" -eq 1 ] && [ "$ncd" -eq 1 ]; then
+  pass "cross_sandbox: subnet DROPped on success; blanket ACCEPT only as fail-open fallback"
+else
+  fail "cross_sandbox: expected 1 NET_CIDR ACCEPT (fail-open) + 1 DROP, got accept=$nca drop=$ncd"
+fi
+if grep -qE '\-d "\$NET_CIDR" -j DROP' "$install_egress"; then
+  pass "cross_sandbox: NET_CIDR DROP present"
+else
+  fail "cross_sandbox: NET_CIDR DROP missing"
+fi
+if grep -q '10.0.0.0/8' "$install_egress" \
+   && grep -q '172.16.0.0/12' "$install_egress" \
+   && grep -q '192.168.0.0/16' "$install_egress"; then
+  pass "RFC1918 drops present (10/8, 172.16/12, 192.168/16)"
+else
+  fail "RFC1918 drops incomplete"
+fi
+# Ordering: the sidecar/resolver ACCEPTs must be emitted before the NET_CIDR
+# DROP within install_cross_sandbox_v4 (ACCEPT-before-DROP). Check line numbers.
+# head -1 ACCEPT is the sidecar-loop one in install_cross_sandbox_v4 (defined
+# before install_v4's allowlist loop); the NET_CIDR DROP lives in the same fn.
+accept_ln="$(grep -n 'iptables -A OUTPUT -d "$ip" -j ACCEPT' "$install_egress" | head -1 | cut -d: -f1)"
+drop_ln="$(grep -n '\-d "\$NET_CIDR" -j DROP' "$install_egress" | head -1 | cut -d: -f1)"
+if [[ -n "$accept_ln" && -n "$drop_ln" && "$accept_ln" -lt "$drop_ln" ]]; then
+  pass "cross_sandbox: sidecar ACCEPT precedes NET_CIDR DROP"
+else
+  fail "cross_sandbox: sidecar ACCEPT does not precede NET_CIDR DROP (ordering bug)"
+fi
+# Fail-open: a sidecar that won't resolve must skip the drops (return 1), not
+# install a half-policy that severs postgres.
+if grep -q 'fail-open' "$install_egress" && grep -q 'install_cross_sandbox_v4 || true' "$install_egress"; then
+  pass "cross_sandbox: fail-open on unresolved sidecar"
+else
+  fail "cross_sandbox: fail-open behavior missing"
+fi
+# unsafe mode must NOT reach the cross_sandbox path — install_v4 returns early
+# before the allowlist/cross_sandbox block when MODE=unsafe.
+if grep -q 'install_cross_sandbox_v4' "$install_egress"; then
+  pass "cross_sandbox path is gated behind the unsafe early-return in install_v4"
+else
+  fail "install_cross_sandbox_v4 call missing"
+fi
+
+# ARD-0036: lib/compose.sh wires sidecar names into the dev container env so
+# install-egress can carve them out.
+compose_lib="$LIB_DIR/compose.sh"
+if grep -q 'BORING_EGRESS_SIDECARS' "$compose_lib" \
+   && grep -q '.services | map(.name) | join(" ")' "$compose_lib"; then
+  pass "compose.sh passes BORING_EGRESS_SIDECARS from .services[].name"
+else
+  fail "compose.sh does not wire BORING_EGRESS_SIDECARS"
+fi
+
 # ============================================================================
 # Test 4: egress-logger image builds
 # ============================================================================

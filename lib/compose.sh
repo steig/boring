@@ -431,13 +431,17 @@ ${build_args_block}"
 
   # Egress enforcement directives (ARD-0011). cap_add + the BORING_EGRESS_MODE
   # env var are only emitted when egress.allow is non-empty.
-  local cap_add_block="" egress_env=""
+  local cap_add_block="" egress_env="" egress_sidecars=""
   if egress_enabled "$profile_json"; then
     cap_add_block="    cap_add:
       - NET_ADMIN"
     # Default to enforce; cmd_open's --learn-mode overrides via docker-compose
     # override file or remoteEnv at devcontainer-up time.
     egress_env="BORING_EGRESS_MODE"
+    # ARD-0036 cross_sandbox: pass the declared sidecar service names to
+    # install-egress so it can carve them out of the docker-subnet/RFC1918 drops
+    # (otherwise dev → postgres/redis breaks). Space-separated .services[].name.
+    egress_sidecars="$(jq -r '.services | map(.name) | join(" ")' <<<"$profile_json")"
   fi
 
   # ARD-0015 egress-logger sidecar — emitted whenever egress is enabled (not
@@ -587,6 +591,9 @@ EOF
       # Use compose interpolation so --learn-mode (which sets the host env var
       # before `devcontainer up`) flips the mode without rewriting this file.
       echo "      BORING_EGRESS_MODE: \"\${BORING_EGRESS_MODE:-enforce}\""
+      # ARD-0036: literal sidecar names (empty string when no sidecars declared,
+      # in which case install-egress just drops the whole subnet).
+      echo "      BORING_EGRESS_SIDECARS: \"${egress_sidecars}\""
     fi
   fi
   if [[ -n "$depends_block" ]]; then

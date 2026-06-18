@@ -18,6 +18,10 @@ set -eu
 
 MODE="${BORING_EGRESS_MODE:-}"
 ALLOW_FILE="${BORING_EGRESS_ALLOW_FILE:-/etc/boring/egress.allow}"
+# ARD-0036 cross_sandbox: the profile's declared sidecar service names (ARD-0007),
+# passed through by lib/compose.sh as a space/comma-separated list. Each is
+# resolved to its container IP and ACCEPTed before the rest of $NET_CIDR drops.
+SIDECARS="${BORING_EGRESS_SIDECARS:-}"
 # ARD-0015: learn mode logs via NFLOG (userspace netfilter logger) instead of
 # kernel LOG. ulogd2 in the egress-logger sidecar binds NFLOG group 5 on the
 # shared netns and writes JSON-Lines. The prefix is a bare string (no
@@ -101,6 +105,54 @@ install_floor_v6() {
   ip6tables -A OUTPUT -d fe80::/10         -j DROP 2>/dev/null || true  # link-local
 }
 
+# Resolver IPs from /etc/resolv.conf, one per line. The resolver is carved out
+# of both cross_sandbox and RFC1918 drops so name resolution survives even when
+# the resolver sits inside the docker subnet (the common compose case) or a
+# private range.
+resolver_ips() { awk '/^[[:space:]]*nameserver/ {print $2}' /etc/resolv.conf 2>/dev/null; }
+
+# ARD-0036 cross_sandbox + RFC1918 carve-outs (enforce + learn only; never
+# unsafe). Returns 0 if the drops were installed, 1 if a declared sidecar could
+# not be resolved. On a resolution failure we FAIL OPEN: the caller skips the
+# drops for this run rather than risk severing dev → postgres/redis. Better a
+# wide-open subnet than a silently-broken multi-service profile.
+#
+# Order within the chain: sidecar + resolver ACCEPTs first, then the
+# cross_sandbox ($NET_CIDR) DROP, then the three RFC1918 DROPs. install_v4 runs
+# the allowlist loop just above this call, so any allowlisted host that resolves
+# into a private range is already ACCEPTed and beats these drops.
+install_cross_sandbox_v4() {
+  # Resolve every declared sidecar FIRST. If any won't resolve, fail OPEN:
+  # restore the old blanket subnet ACCEPT and install no drops this run, so a
+  # slow-to-boot sidecar can never sever dev -> postgres/redis. (The blanket
+  # ACCEPT must go back; without it the subnet would fall through to the enforce
+  # REJECT tail — fail-closed, the opposite of what we want.)
+  sidecar_ips=""
+  for svc in $(printf '%s' "$SIDECARS" | tr ',' ' '); do
+    [ -z "$svc" ] && continue
+    ips="$(getent ahostsv4 "$svc" 2>/dev/null | awk '{print $1}' | sort -u)"
+    if [ -z "$ips" ]; then
+      log "warning: could not resolve sidecar '$svc' (v4); leaving the docker subnet open this run — cross_sandbox/RFC1918 drops skipped (fail-open)"
+      iptables -A OUTPUT -d "$NET_CIDR" -j ACCEPT
+      return 1
+    fi
+    sidecar_ips="$sidecar_ips $ips"
+  done
+  # Carve out the resolver + each resolved sidecar IP, then drop the rest of the
+  # docker subnet and the RFC1918 ranges.
+  for r in $(resolver_ips); do
+    case "$r" in *.*) iptables -A OUTPUT -d "$r" -j ACCEPT ;; esac
+  done
+  for ip in $sidecar_ips; do
+    iptables -A OUTPUT -d "$ip" -j ACCEPT
+  done
+  iptables -A OUTPUT -d "$NET_CIDR" -j DROP            # cross_sandbox: rest of docker subnet
+  iptables -A OUTPUT -d 10.0.0.0/8     -j DROP         # RFC1918
+  iptables -A OUTPUT -d 172.16.0.0/12  -j DROP         # RFC1918
+  iptables -A OUTPUT -d 192.168.0.0/16 -j DROP         # RFC1918 (host LAN — ARD-0042)
+  return 0
+}
+
 install_v4() {
   iptables -F OUTPUT
   iptables -P OUTPUT ACCEPT  # safe baseline while we install; tail-rule decides final fate
@@ -113,7 +165,6 @@ install_v4() {
     return 0
   fi
   iptables -A OUTPUT -o lo -j ACCEPT
-  iptables -A OUTPUT -d "$NET_CIDR" -j ACCEPT
   iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
   iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
   # Allow established/related so return traffic for already-accepted flows works.
@@ -134,6 +185,11 @@ install_v4() {
       done
     done < "$ALLOW_FILE"
   fi
+
+  # ARD-0036 cross_sandbox + RFC1918. Comes after the allowlist (so an
+  # allowlisted private host is already ACCEPTed and beats the drop) but before
+  # the tail. Fails open if a declared sidecar won't resolve — see helper.
+  install_cross_sandbox_v4 || true
 
   # shellcheck disable=SC2086  # TAIL_RULE intentionally word-split
   iptables -A OUTPUT $TAIL_RULE
