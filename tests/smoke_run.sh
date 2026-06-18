@@ -382,6 +382,46 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# Test 7: agent_no_output verdict — clean exit, empty output → exit 3 (ARD-0038)
+# ----------------------------------------------------------------------------
+section "Test 7: agent_no_output → exit 3 (ARD-0038)"
+write_mock claude 'exit 0'   # exit 0 but produces no stdout
+: >"$MOCK_LOG"
+PATH="$MOCK_BIN:$PATH" \
+  bash "$REPO_ROOT/boring" run "do nothing" \
+    --profile smoke-run-fixture --repo "$PROFILE_DIR" >"$TMPDIR_BASE/out7.log" 2>&1 \
+  && rc=0 || rc=$?
+if [[ $rc -eq 3 ]]; then
+  pass "empty-output turn classified agent_no_output (exit 3)"
+else
+  fail "expected exit 3 for empty output, got $rc"
+  sed 's/^/    /' "$TMPDIR_BASE/out7.log" >&2
+fi
+if grep -q "verdict=agent_no_output" "$TMPDIR_BASE/out7.log"; then
+  pass "agent_no_output diagnostic line emitted to stderr"
+else
+  fail "missing agent_no_output diagnostic line"
+fi
+
+# ----------------------------------------------------------------------------
+# Test 8: nonzero_exit verdict — claude's non-zero code propagates (ARD-0038)
+# ----------------------------------------------------------------------------
+section "Test 8: claude non-zero exit propagates (ARD-0038 nonzero_exit)"
+write_mock claude 'echo "boom" >&2; exit 7'
+PATH="$MOCK_BIN:$PATH" \
+  bash "$REPO_ROOT/boring" run "fail please" \
+    --profile smoke-run-fixture --repo "$PROFILE_DIR" >"$TMPDIR_BASE/out8.log" 2>&1 \
+  && rc=0 || rc=$?
+if [[ $rc -eq 7 ]]; then
+  pass "non-zero claude exit (7) propagates as nonzero_exit"
+else
+  fail "expected exit 7, got $rc"
+  sed 's/^/    /' "$TMPDIR_BASE/out8.log" >&2
+fi
+# Restore the happy claude mock so test order stays independent.
+write_mock claude 'echo "claude-mock saw: $*"; exit 0'
+
+# ----------------------------------------------------------------------------
 # Summary
 # ----------------------------------------------------------------------------
 echo

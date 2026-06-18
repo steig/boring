@@ -763,18 +763,42 @@ cmd_run() {
     ${_CMD_RUN_REMOTE_ENV_ARGS[@]+"${_CMD_RUN_REMOTE_ENV_ARGS[@]}"}
 
   log_step "Running Claude headlessly inside container"
-  # Claude Code's non-interactive mode: `claude -p "<prompt>"` (per ARD-0013 §2
-  # and the Claude Code CLI docs). Output streams to this terminal as Claude
-  # produces it; exit code propagates to `boring`.
-  local claude_exit=0
+  # Claude Code's non-interactive mode: `claude -p "<prompt>"` (per ARD-0013 §2).
+  # Output streams to this terminal live via `tee` AND is captured so we can
+  # classify the turn outcome (ARD-0038): a clean exit that produced *nothing*
+  # is agent_no_output, not success — the failure mode boring adopts from the
+  # sandboxes audit (the OpenCode target is prone to exit-0-on-empty).
+  local claude_exit=0 out_file
+  out_file="$(mktemp)"
+  # set +e + PIPESTATUS: capture claude's real exit through the tee pipe without
+  # `set -e` aborting on a non-zero turn. PIPESTATUS[0] is claude's, not tee's.
+  set +e
   devcontainer_exec \
     --workspace-folder "$repo" \
-    -- claude -p "$prompt" || claude_exit=$?
+    -- claude -p "$prompt" | tee "$out_file"
+  claude_exit="${PIPESTATUS[0]}"
+  set -e
 
-  log_info "Claude exited with code: $claude_exit"
-  # Teardown runs via the EXIT trap; exit with Claude's code to preserve
-  # CI-friendly exit semantics.
-  exit "$claude_exit"
+  # Classify (ARD-0038 §1/§2). The headless path sees only final output, not the
+  # stream's ai_text/tool_call events, so agent_no_output here = "exit 0 but
+  # empty output" — a coarse approximation of the Go ParseStream rule, enough to
+  # catch "the agent produced nothing." Distinct exit codes let CI tell the
+  # categories apart: 0=ok | 3=agent_no_output | claude's own non-zero=nonzero_exit.
+  local verdict run_exit
+  if [[ "$claude_exit" -ne 0 ]]; then
+    verdict="nonzero_exit"; run_exit="$claude_exit"
+  elif [[ -z "$(tr -d '[:space:]' < "$out_file")" ]]; then
+    verdict="agent_no_output"; run_exit=3
+  else
+    verdict="ok"; run_exit=0
+  fi
+  rm -f "$out_file"
+
+  log_info "Claude exited with code: $claude_exit (verdict: $verdict)"
+  [[ "$verdict" != "ok" ]] && echo "boring run: turn failed — verdict=$verdict (ARD-0038)" >&2
+  # Teardown runs via the EXIT trap; exit with the verdict-mapped code so CI can
+  # distinguish "agent produced nothing" (3) from a claude error (claude's code).
+  exit "$run_exit"
 }
 
 # cmd_restore [<repo-path>] [--refresh]
