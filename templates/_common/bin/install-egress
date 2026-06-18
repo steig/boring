@@ -51,8 +51,8 @@ if [ -z "$MODE" ]; then
   exec gosu dev "$@"
 fi
 
-if [ "$MODE" != "enforce" ] && [ "$MODE" != "learn" ]; then
-  log "unknown BORING_EGRESS_MODE='$MODE' (want enforce|learn) — failing closed"
+if [ "$MODE" != "enforce" ] && [ "$MODE" != "learn" ] && [ "$MODE" != "unsafe" ]; then
+  log "unknown BORING_EGRESS_MODE='$MODE' (want enforce|learn|unsafe) — failing closed"
   exit 2
 fi
 
@@ -77,11 +77,41 @@ fi
 case "$MODE" in
   enforce) TAIL_RULE="-j REJECT --reject-with icmp-net-prohibited" ;;
   learn)   TAIL_RULE="-j NFLOG --nflog-group $NFLOG_GROUP --nflog-prefix $NFLOG_PREFIX" ;;
+  unsafe)  TAIL_RULE="" ;;  # default-ACCEPT; only the ARD-0036 floor blocks
 esac
+
+# ARD-0036 baseline floor (subset): cloud-metadata + link-local, dropped
+# UNCONDITIONALLY in every mode — including --unsafe-network. This is the
+# single highest-value SSRF/credential-theft target (169.254.169.254 et al),
+# named in ARD-0011 as the reason egress exists. The DNS resolver is carved out
+# first so name resolution survives if it happens to sit on a link-local IP.
+# NOTE: the other ARD-0036 categories (cross_sandbox/$NET_CIDR, smtp,
+# ssh_except_git) are deferred — they need sidecar/git-host carve-outs and
+# in-container verification before they can ship without breaking connectivity.
+install_floor_v4() {
+  for r in $(awk '/^[[:space:]]*nameserver/ {print $2}' /etc/resolv.conf 2>/dev/null); do
+    case "$r" in 169.254.*) iptables -A OUTPUT -d "$r" -j ACCEPT ;; esac
+  done
+  iptables -A OUTPUT -d 169.254.169.254/32 -j DROP   # AWS / GCP IMDS
+  iptables -A OUTPUT -d 169.254.170.2/32   -j DROP   # ECS task metadata
+  iptables -A OUTPUT -d 169.254.0.0/16     -j DROP   # link-local (covers the above)
+}
+install_floor_v6() {
+  ip6tables -A OUTPUT -d fd00:ec2::254/128 -j DROP 2>/dev/null || true  # EC2 IMDSv6
+  ip6tables -A OUTPUT -d fe80::/10         -j DROP 2>/dev/null || true  # link-local
+}
 
 install_v4() {
   iptables -F OUTPUT
   iptables -P OUTPUT ACCEPT  # safe baseline while we install; tail-rule decides final fate
+  # ARD-0036 floor FIRST so a deny beats every later ACCEPT (allowlist AND the
+  # unsafe-mode default-accept).
+  install_floor_v4
+  # --unsafe-network: everything else is allowed (default policy ACCEPT). Only
+  # the floor above blocks. No allowlist, no tail REJECT.
+  if [ "$MODE" = "unsafe" ]; then
+    return 0
+  fi
   iptables -A OUTPUT -o lo -j ACCEPT
   iptables -A OUTPUT -d "$NET_CIDR" -j ACCEPT
   iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
@@ -119,6 +149,10 @@ install_v6() {
   fi
   ip6tables -F OUTPUT
   ip6tables -P OUTPUT ACCEPT
+  install_floor_v6
+  if [ "$MODE" = "unsafe" ]; then
+    return 0
+  fi
   ip6tables -A OUTPUT -o lo -j ACCEPT
   ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT
   ip6tables -A OUTPUT -p tcp --dport 53 -j ACCEPT
