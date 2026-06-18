@@ -56,6 +56,10 @@ PASS=0
 FAIL=0
 pass() { echo "  [PASS] $*"; PASS=$((PASS + 1)); }
 fail() { echo "  [FAIL] $*" >&2; FAIL=$((FAIL + 1)); }
+# skip: environment can't exercise this (e.g. the CI runner denies the
+# netfilter scheduler cap NFLOG needs). Not a failure — does not bump FAIL.
+skip() { echo "  [SKIP] $*" >&2; }
+nflog_unavailable=0
 step() { echo; echo "==> $*"; }
 
 mk_repo() {
@@ -305,11 +309,22 @@ if [[ -f "$ulogd_json" ]] && [[ -s "$ulogd_json" ]]; then
     head -5 "$ulogd_json" >&2 || true
   fi
 else
-  fail "ulogd.json missing or empty at $ulogd_json"
-  echo "    (egress-logger logs:)" >&2
-  docker compose -p "$COMPOSE_PROJECT" -f "$repo1/.devcontainer/docker-compose.yml" logs egress-logger 2>&1 | tail -20 >&2 || true
-  echo "    (dev logs:)" >&2
-  docker compose -p "$COMPOSE_PROJECT" -f "$repo1/.devcontainer/docker-compose.yml" logs dev 2>&1 | tail -20 >&2 || true
+  # Distinguish "this environment can't do NFLOG" from a real regression. The
+  # egress-logger (ulogd2) logs the former explicitly when the runner denies
+  # the netfilter scheduler capability — common on GitHub-hosted runners. Treat
+  # that as a SKIP so the Docker layer doesn't flap the whole suite (issue #23);
+  # any other empty-ulogd cause is still a hard FAIL.
+  el_logs="$(docker compose -p "$COMPOSE_PROJECT" -f "$repo1/.devcontainer/docker-compose.yml" logs egress-logger 2>&1 || true)"
+  if printf '%s' "$el_logs" | grep -qiE 'scheduler configuration failed|Operation not permitted'; then
+    nflog_unavailable=1
+    skip "ulogd2/NFLOG unavailable here (runner denied the netfilter scheduler cap) — live-capture assertions (Tests 5-6) skipped. Rule-emission checks (Tests 1-3) still ran."
+  else
+    fail "ulogd.json missing or empty at $ulogd_json"
+    echo "    (egress-logger logs:)" >&2
+    printf '%s\n' "$el_logs" | tail -20 >&2
+    echo "    (dev logs:)" >&2
+    docker compose -p "$COMPOSE_PROJECT" -f "$repo1/.devcontainer/docker-compose.yml" logs dev 2>&1 | tail -20 >&2 || true
+  fi
 fi
 
 # ============================================================================
@@ -342,6 +357,8 @@ if [[ -f "$ulogd_json" ]] && [[ -s "$ulogd_json" ]]; then
     fail "diff did not include new proposed entries (got $proposed_lines lines)"
     echo "$diff_out" >&2
   fi
+elif [[ "$nflog_unavailable" == "1" ]]; then
+  skip "parser test skipped — no ulogd.json (NFLOG unavailable in this environment)."
 else
   fail "skipping parser test (no ulogd.json to parse)"
 fi
