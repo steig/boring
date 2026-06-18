@@ -1,16 +1,19 @@
-/* picker.css — minimal styling for the v0 project picker (ARD-0021 §3). */
+/* picker.css — "mission control" dashboard styling (ARD-0041, builds on
+   ARD-0021 §3). A dark, calm grid of live project cards. */
 
 :root {
-  --bg: #fafafa;
-  --fg: #1a1a1a;
-  --muted: #6b6b6b;
-  --card: #ffffff;
-  --border: #e3e3e3;
-  --accent: #2d6cdf;
-  --green: #2ea043;
-  --yellow: #d4a72c;
-  --gray: #8a8a8a;
-  --red: #cf222e;
+  --bg: #0e1116;
+  --panel: #161b22;
+  --card: #1b212b;
+  --card-hover: #222a36;
+  --fg: #e6edf3;
+  --muted: #8b98a8;
+  --border: #2a323d;
+  --accent: #4c8dff;
+  --green: #3fb950;
+  --yellow: #d29922;
+  --gray: #7d8590;
+  --red: #f85149;
 }
 
 * { box-sizing: border-box; }
@@ -28,105 +31,201 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 0.75rem 1.5rem;
-  background: var(--card);
+  background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 
 .brand {
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-size: 1.05rem;
 }
+.brand-dot { color: var(--accent); }
 
 .user {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   color: var(--muted);
+  display: flex;
+  align-items: center;
 }
+.sep { margin: 0 0.6rem; opacity: 0.4; }
 
-.sep { margin: 0 0.5rem; opacity: 0.5; }
+.conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--green);
+  font-weight: 500;
+}
+.conn::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.5);
+  animation: pulse 2s infinite;
+}
+.conn.off { color: var(--red); }
+.conn.off::before { background: var(--red); animation: none; }
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.5); }
+  70% { box-shadow: 0 0 0 6px rgba(63, 185, 80, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0); }
+}
 
 .link { color: var(--accent); text-decoration: none; }
 .link:hover { text-decoration: underline; }
 
 main {
-  max-width: 960px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 2rem 1.5rem;
 }
 
-h1 {
-  font-size: 1.25rem;
-  font-weight: 600;
-  margin: 0 0 1.25rem;
+.title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
 }
+h1 {
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.counts { display: flex; gap: 0.5rem; }
+.count {
+  font-size: 0.75rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.15rem 0.6rem;
+}
+.count.running { color: var(--green); border-color: rgba(63, 185, 80, 0.4); }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 1rem;
 }
 
 .card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 1rem;
+  border-radius: 10px;
+  padding: 1.1rem;
   cursor: pointer;
-  transition: border-color 0.15s, transform 0.05s;
+  text-decoration: none;
+  color: inherit;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.15s, background 0.15s, transform 0.06s;
 }
-.card:hover { border-color: var(--accent); }
-.card:active { transform: scale(0.995); }
+.card:hover { border-color: var(--accent); background: var(--card-hover); }
+.card:active { transform: scale(0.99); }
 
-.card .name {
-  font-weight: 600;
-  margin-bottom: 0.5rem;
+/* Left status rail — color-coded by live state. */
+.card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--gray);
+}
+.card.status-running::before { background: var(--green); }
+.card.status-starting::before { background: var(--yellow); }
+.card.status-error::before { background: var(--red); }
+
+.card-top {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.5rem;
+}
+.card .name {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .badge {
-  font-size: 0.75rem;
-  padding: 0.1rem 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: none;
+  font-size: 0.72rem;
+  padding: 0.12rem 0.55rem;
   border-radius: 12px;
-  background: #eee;
+  background: #2a323d;
   color: var(--muted);
   text-transform: lowercase;
   font-weight: 500;
 }
-.badge.running { background: #e6f4ea; color: var(--green); }
-.badge.starting { background: #fff4d6; color: var(--yellow); }
-.badge.stopped { background: #f0f0f0; color: var(--gray); }
-.badge.error { background: #ffeef0; color: var(--red); }
+.badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.badge.running { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+.badge.starting { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+.badge.stopped { background: #2a323d; color: var(--gray); }
+.badge.error { background: rgba(248, 81, 73, 0.15); color: var(--red); }
 
 .card .summary {
   font-size: 0.9rem;
   color: var(--muted);
-  min-height: 1.5em;
+  min-height: 1.4em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+.card .meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--gray);
+}
+.card .slug { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 .card.add {
   display: flex;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
+  gap: 0.4rem;
   color: var(--muted);
   font-weight: 500;
   border-style: dashed;
+  background: transparent;
 }
+.card.add::before { display: none; }
+.card.add:hover { color: var(--accent); }
+.card.add .plus { font-size: 1.2rem; line-height: 1; }
 
 .empty {
+  grid-column: 1 / -1;
   color: var(--muted);
-  padding: 2rem;
+  padding: 2.5rem;
   text-align: center;
   background: var(--card);
   border: 1px dashed var(--border);
-  border-radius: 6px;
+  border-radius: 10px;
 }
 
 .error {
-  background: #ffeef0;
+  background: rgba(248, 81, 73, 0.12);
   color: var(--red);
   padding: 0.75rem 1rem;
-  border-radius: 6px;
+  border-radius: 8px;
   margin-bottom: 1rem;
   font-size: 0.9rem;
 }

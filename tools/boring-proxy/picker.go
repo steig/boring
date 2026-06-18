@@ -1,5 +1,5 @@
 // picker.go — serves the project picker (HTML + assets) and the /api/projects
-// JSON endpoint the picker consumes.
+// JSON endpoint the dashboard consumes.
 package main
 
 import (
@@ -41,12 +41,57 @@ func ServePickerAsset(w http.ResponseWriter, req *http.Request) {
 	http.StripPrefix("/assets/", http.FileServer(http.FS(sub))).ServeHTTP(w, req)
 }
 
-// ServeProjectsAPI returns the registry as JSON for the picker's JS.
+// projectCard is the per-project view the dashboard renders. It augments the
+// registry entry with a live status (resolved from socket reachability, not
+// just the operator-asserted registry field) and the project's in-proxy URL.
+type projectCard struct {
+	Slug       string `json:"slug"`
+	Name       string `json:"name"`
+	URL        string `json:"url"`
+	Status     string `json:"status"`
+	LastActive string `json:"last_active,omitempty"`
+	Summary    string `json:"summary,omitempty"`
+}
+
+// ServeProjectsAPI returns the registry, decorated with live status, as JSON
+// for the dashboard's JS.
 func ServeProjectsAPI(w http.ResponseWriter, _ *http.Request, reg *Registry) {
 	projects := reg.List()
+	cards := make([]projectCard, 0, len(projects))
+	for _, p := range projects {
+		cards = append(cards, projectCard{
+			Slug:       p.Slug,
+			Name:       p.Name,
+			URL:        "/" + p.Slug + "/",
+			Status:     liveStatus(p),
+			LastActive: p.LastActive,
+			Summary:    p.Summary,
+		})
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-cache")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"projects": projects,
+		"projects": cards,
 	})
+}
+
+// liveStatus resolves status from the project's socket rather than the
+// operator-asserted registry field (which ARD-0021 left as a TODO). A reachable
+// socket reads "running"; otherwise transient registry states pass through and
+// everything else collapses to "stopped".
+func liveStatus(p Project) string {
+	sock := p.Socket
+	if sock == "" {
+		sock = defaultSocketPath(p.Slug)
+	}
+	// verifySocketOwner Lstats the path, so a missing socket fails here too.
+	if verifySocketOwner(sock) == nil {
+		return "running"
+	}
+	switch p.Status {
+	case "starting", "error":
+		return p.Status
+	default:
+		return "stopped"
+	}
 }
