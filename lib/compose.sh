@@ -410,14 +410,17 @@ ${build_args_block}"
   # trust-anchor contract of ARD-0009 hold.
   # Per ARD-0028 the codegen'd AGENTS.md lives at <repo>/.boring/codegen/AGENTS.md
   # and is re-bound at /home/dev/.config/opencode/AGENTS.md (RO) so OpenCode
-  # discovers it via its native convention. The matching CLAUDE.md is read
-  # in-place from the workspace bind-mount via the image-baked @-include
-  # wiring file (ARD-0017 §3); no separate compose mount needed for Claude.
+  # discovers it via its native convention. The matching CLAUDE.md (ARD-0017) is
+  # re-bound RO at /home/dev/.claude/boring-profile.md and pulled in by the
+  # image-baked /home/dev/.claude/CLAUDE.md via an `@boring-profile.md` import —
+  # the Claude-side equivalent of the OpenCode AGENTS.md path. Both codegen docs
+  # are written host-side before compose up, so the bind sources always exist.
   local volumes
   volumes="$(jq -r --arg fifo "$audit_fifo_host" --argjson extra "$extra_mounts_json" '
     ["..:/workspace:cached",
      "../.devcontainer/boring-runtime:/workspace/.devcontainer/boring-runtime:ro",
      "../.boring/codegen/AGENTS.md:/home/dev/.config/opencode/AGENTS.md:ro",
+     "../.boring/codegen/CLAUDE.md:/home/dev/.claude/boring-profile.md:ro",
      ($fifo + ":/var/log/boring/events.fifo")] +
     (.mounts | map(
       if .ro then "\(.host):\(.container):ro" else "\(.host):\(.container)" end
