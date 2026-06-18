@@ -831,11 +831,21 @@ cmd_restore() {
 # container to be up — a PM can scroll yesterday's session.
 cmd_audit() {
   local sub="${1:-}"; shift || true
-  local profile="${1:-}"; shift || true
+  # Parse a positional <profile> plus an optional --agent <name> filter
+  # (ARD-0027) in any order.
+  local profile="" agent_filter=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --agent) agent_filter="${2:?--agent requires a value}"; shift 2 ;;
+      --agent=*) agent_filter="${1#--agent=}"; shift ;;
+      -*) die "boring audit: unknown flag: $1" ;;
+      *) [[ -z "$profile" ]] && profile="$1" || die "boring audit: unexpected argument: $1"; shift ;;
+    esac
+  done
   case "$sub" in
     security)
       [[ -n "$profile" ]] || die "boring audit security: missing <profile>"
-      audit_cat_security "$profile" ;;
+      audit_cat_security "$profile" "$agent_filter" ;;
     prompts)
       [[ -n "$profile" ]] || die "boring audit prompts: missing <profile>"
       # Resolve audit.prompts from the profile if we can find the repo; default
@@ -847,9 +857,9 @@ cmd_audit() {
         pjson="$(profile_load "$(pwd)" 2>/dev/null || echo '')"
         [[ -n "$pjson" ]] && visibility="$(jq -r '.audit.prompts // "per_user"' <<<"$pjson")"
       fi
-      audit_cat_prompts "$profile" "$visibility" ;;
+      audit_cat_prompts "$profile" "$visibility" "$agent_filter" ;;
     *)
-      log_error "boring audit: usage: boring audit {security|prompts} <profile>"
+      log_error "boring audit: usage: boring audit {security|prompts} <profile> [--agent <name>]"
       exit 1 ;;
   esac
 }
