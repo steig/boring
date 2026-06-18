@@ -72,11 +72,18 @@ cmd_open() {
   # --remote-env (never written to disk); verifies setup marker post-up.
   #
   # Flags:
-  #   --learn-mode  Per ARD-0011, install iptables LOG (audit-only) rules
-  #                 instead of REJECT. On Ctrl-C, parse the logs and emit a
-  #                 proposed egress.allow diff for the user to paste.
+  #   --learn-mode      Per ARD-0011, install iptables LOG (audit-only) rules
+  #                     instead of REJECT. On Ctrl-C, parse the logs and emit a
+  #                     proposed egress.allow diff for the user to paste.
+  #   --unsafe-network  Per ARD-0011, relax egress to default-ACCEPT — the
+  #                     allowlist is NOT enforced; only the ARD-0036 metadata/
+  #                     link-local floor still blocks. Mutually exclusive with
+  #                     --learn-mode.
   local target=""
   local learn_mode=0
+  # unsafe_network: 1 = --unsafe-network, default-ACCEPT egress with only the
+  # ARD-0036 metadata/link-local floor enforced (ARD-0011 escape hatch).
+  local unsafe_network=0
   # ui_flag: "" = unset (profile decides), "on" = --ui forced, "off" = --no-ui forced.
   local ui_flag=""
   # no_dev: 0 = run dev.command if profile sets it (default), 1 = skip and drop
@@ -85,7 +92,8 @@ cmd_open() {
   local no_dev=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --learn-mode) learn_mode=1; shift ;;
+      --learn-mode)     learn_mode=1; shift ;;
+      --unsafe-network) unsafe_network=1; shift ;;
       --ui)         ui_flag="on"; shift ;;
       --no-ui)      ui_flag="off"; shift ;;
       --no-dev)     no_dev=1; shift ;;
@@ -190,6 +198,18 @@ cmd_open() {
       trap '_cmd_open_emit_learn_diff "$BORING_OPEN_LEARN_REPO"; _cmd_open_teardown_all "${BORING_OPEN_PROFILE_NAME:-}" "${BORING_OPEN_UI_STARTED:-0}"' EXIT
     else
       log_warn "egress: --learn-mode requested but profile has no egress.allow — nothing to learn"
+    fi
+  fi
+
+  # ARD-0011 escape hatch: --unsafe-network relaxes egress to default-ACCEPT,
+  # leaving ONLY the ARD-0036 metadata/link-local floor enforced in-container.
+  if [[ "$unsafe_network" -eq 1 ]]; then
+    [[ "$learn_mode" -eq 1 ]] && die "boring open: --unsafe-network and --learn-mode are mutually exclusive."
+    if egress_enabled "$profile_json"; then
+      export BORING_EGRESS_MODE=unsafe
+      log_warn "egress: --unsafe-network ACTIVE — the egress allowlist is NOT enforced. Only the cloud-metadata/link-local floor (ARD-0036) still blocks. Use only when you accept the exposure."
+    else
+      log_warn "egress: --unsafe-network requested but the profile declares no egress.allow — egress was not being enforced anyway; nothing to relax."
     fi
   fi
 

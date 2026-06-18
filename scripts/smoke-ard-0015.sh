@@ -192,6 +192,24 @@ else
   fail "enforce mode case missing REJECT — regression"
 fi
 
+# ARD-0036 floor + ARD-0011 --unsafe-network (rule-emission inspection; the
+# kernel-level block is exercised by the Docker layer when the runner allows it).
+if grep -q '169.254.169.254/32 -j DROP' "$install_egress"; then
+  pass "ARD-0036 floor drops cloud-metadata 169.254.169.254"
+else
+  fail "ARD-0036 metadata floor (169.254.169.254 DROP) missing"
+fi
+if grep -q 'install_floor_v4' "$install_egress" && grep -qE '169\.254\.0\.0/16[[:space:]]+-j DROP' "$install_egress"; then
+  pass "link-local floor installed (169.254.0.0/16 DROP)"
+else
+  fail "link-local floor missing"
+fi
+if grep -q '"unsafe"' "$install_egress" && grep -q 'MODE" = "unsafe"' "$install_egress"; then
+  pass "unsafe mode handled (floor-only, default-ACCEPT)"
+else
+  fail "unsafe mode not wired in install-egress"
+fi
+
 # ============================================================================
 # Test 4: egress-logger image builds
 # ============================================================================
