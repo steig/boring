@@ -211,13 +211,17 @@ else
 fi
 
 # ARD-0036 cross_sandbox + RFC1918 (script-inspection; the kernel block is the
-# Docker-layer/human verification step). The wide-open `-d $NET_CIDR -j ACCEPT`
-# must be gone, replaced by sidecar/resolver ACCEPTs then a $NET_CIDR DROP and
-# the three RFC1918 DROPs.
-if ! grep -qE '\-d "\$NET_CIDR" -j ACCEPT' "$install_egress"; then
-  pass "cross_sandbox: blanket NET_CIDR ACCEPT removed"
+# Docker-layer/human verification step). On the success path the subnet is
+# DROPped (after sidecar/resolver carve-outs); the ONLY blanket `-d $NET_CIDR -j
+# ACCEPT` that remains is the fail-open fallback, restored so an unresolved
+# sidecar can't sever dev -> postgres. So: exactly one NET_CIDR ACCEPT (fail-open)
+# and one NET_CIDR DROP (cross_sandbox).
+nca="$(grep -cE '\-d "\$NET_CIDR" -j ACCEPT' "$install_egress")"
+ncd="$(grep -cE '\-d "\$NET_CIDR" -j DROP' "$install_egress")"
+if [ "$nca" -eq 1 ] && [ "$ncd" -eq 1 ]; then
+  pass "cross_sandbox: subnet DROPped on success; blanket ACCEPT only as fail-open fallback"
 else
-  fail "cross_sandbox: blanket -d \$NET_CIDR -j ACCEPT still present (subnet wide open)"
+  fail "cross_sandbox: expected 1 NET_CIDR ACCEPT (fail-open) + 1 DROP, got accept=$nca drop=$ncd"
 fi
 if grep -qE '\-d "\$NET_CIDR" -j DROP' "$install_egress"; then
   pass "cross_sandbox: NET_CIDR DROP present"
