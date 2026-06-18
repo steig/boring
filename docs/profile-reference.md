@@ -66,8 +66,13 @@ restore:                       # v0.5 — real-shape data via dbx
 
 data_sensitivity: internal     # internal | sanitized | public (v0.5)
 
-egress:                        # declarative today; enforced v0.4
+egress:                        # outbound allowlist (enforced; metadata floor always on)
   allow: [api.anthropic.com, github.com, registry.npmjs.org]
+
+extensions:                    # VS Code extensions → devcontainer.json
+  - dbaeumer.vscode-eslint
+extension_settings:            # VS Code workspace settings
+  "editor.formatOnSave": true
 
 claude:
   mcp: []                      # project-scoped MCP servers
@@ -378,9 +383,13 @@ egress:
     - api.openrouter.ai
 ```
 
-A simple hostname allowlist. Today it's parsed-but-not-enforced. v0.4 ships iptables-in-container enforcement with `CAP_NET_ADMIN` (not `--privileged`) plus `boring open --learn-mode` for authoring the allowlist from observation. ([ARD-0011](ards/ard-0011-egress-enforcement-via-iptables.md), with cross-platform `--learn-mode` via [ARD-0015](ards/ard-0015-ulogd2-sidecar-for-cross-platform-learn-mode.md))
+A simple hostname allowlist, **enforced** in-container via iptables with `CAP_NET_ADMIN` (not `--privileged`). ([ARD-0011](ards/ard-0011-egress-enforcement-via-iptables.md), cross-platform `--learn-mode` via [ARD-0015](ards/ard-0015-ulogd2-sidecar-for-cross-platform-learn-mode.md))
 
 The right way to author this list: run `boring open --learn-mode` once, exercise the app, hit Ctrl-C, and paste the proposed `egress.allow:` diff into your profile. Enforcement and authoring ship together — one without the other is unshippable.
+
+**Always-on floor (ARD-0036).** Beneath the allowlist, cloud-metadata (`169.254.169.254`, ECS `169.254.170.2`, EC2 IMDSv6) and link-local (`169.254.0.0/16`, `fe80::/10`) are dropped **unconditionally, in every mode** — the #1 SSRF / credential-theft target a prompt-injected agent would reach for. The DNS resolver is carved out so name resolution still works.
+
+**`boring open --unsafe-network`.** Relaxes egress to default-ACCEPT — the allowlist is **not** enforced, only the metadata/link-local floor still blocks. Mutually exclusive with `--learn-mode`. Use only when you accept the exposure (e.g. a throwaway repo); the warning is loud and intentional.
 
 ---
 
@@ -398,6 +407,26 @@ claude:
 Project-scoped Claude Code configuration. `mcp:` lists MCP servers the in-container agent has access to — Linear, Sentry, custom ones. Each entry is forwarded verbatim into the container's `~/.claude/mcp.json`.
 
 The in-container Claude lives in a sandbox: this project's MCP servers, this project's memory, this profile's tool allowlist. A poisoned file in one project can't read another's notes. ([ARD-0001](ards/ard-0001-v1-architecture.md))
+
+---
+
+## `extensions:` / `extension_settings:` — VS Code editor setup
+
+```yaml
+extensions:
+  - dbaeumer.vscode-eslint          # publisher.id
+  - shopify.theme-check-vscode@2.5.0 # optional @version pin
+extension_settings:
+  "editor.formatOnSave": true
+  "eslint.run": "onType"
+```
+
+Declare the VS Code extensions and workspace settings boring writes into the generated `devcontainer.json` (`customizations.vscode`), so an editor attaching to the container gets a consistent setup. ([ARD-0018](ards/ard-0018-vscode-extension-security-and-profile-declaration.md))
+
+- **`extensions:`** — a list of Marketplace identifiers (`publisher.id`), each with an optional `@version` pin. The pin is recorded and `extensions.autoUpdate` is disabled so the installed version doesn't drift; the extensions array itself takes the bare `publisher.id`.
+- **`extension_settings:`** — a free-form VS Code settings map, merged verbatim into the workspace `settings`.
+
+Invalid entries (anything not `publisher.id`-shaped) are rejected at profile parse. Per-preset curated default extension sets are a planned addition (the merge layer is designed in ARD-0018 §2); today `extensions:` is the profile's own declarations.
 
 ---
 

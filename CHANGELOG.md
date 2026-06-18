@@ -4,6 +4,26 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-06-18
+
+### Added
+
+- **`boring open --unsafe-network` + an always-on egress floor (ARD-0011, ARD-0036).** `install-egress` now drops cloud-metadata (`169.254.169.254`, ECS `169.254.170.2`, EC2 IMDSv6) and link-local (`169.254.0.0/16`, `fe80::/10`) **unconditionally in every mode** — the #1 SSRF/credential-theft target — with the DNS resolver carved out so name resolution survives. `--unsafe-network` relaxes the allowlist to default-ACCEPT while keeping that floor; mutually exclusive with `--learn-mode`. Runtime-verified in a NET_ADMIN container. (#14)
+- **`extensions:` / `extension_settings:` profile fields (ARD-0018).** Declare VS Code extensions (`publisher.id[@version]`) and workspace settings; codegen emits them into `devcontainer.json`'s `customizations.vscode` (bare ids + `autoUpdate:false`; settings merged). Invalid ids rejected at parse. (#17)
+- **`boring doctor` repo-side safety-net checks (ARD-0016).** Warns (never fails) on missing GitHub branch protection — PR-required, ≥1 review, force-push blocked — and a missing `.github/PULL_REQUEST_TEMPLATE.md`; skips cleanly for non-GitHub/offline. Ships a PR template per preset. (#15)
+- **`boring audit --agent <name>` filter + `agent:` attribution on every audit event (ARD-0027).** The bash `audit-emit` shim now stamps `agent:` (default `claude`); the Go backend already did. (#21)
+- **Turn-outcome classification (ARD-0038).** boring-ui's `turn_complete` carries a `verdict` (`ok` / `agent_no_output` / `agent_error` / `nonzero_exit`), and `boring run` maps verdicts to distinct exit codes (`0` / `3` / claude's own) with a stderr diagnostic — so CI can tell "the agent produced nothing" from "claude errored." (#16)
+
+### Fixed
+
+- **Per-profile `CLAUDE.md` now reaches the in-container Claude (ARD-0017).** It was generated but never bind-mounted or `@`-included, so the per-profile workflow rules silently reached OpenCode (via `AGENTS.md`) but not Claude. Now RO-mounted and `@`-imported, mirroring the `AGENTS.md` path. (#13)
+- **`smoke-ard-0015` no longer flakes CI** when the runner denies the NFLOG netfilter-scheduler capability — the live-capture steps skip (not fail); rule-emission checks still run. (#23)
+
+### Decisions (ARDs)
+
+- **ARD-0041** — the flashy multi-agent "mission control" cockpit will be built on the **web** substrate (not a native/Ghostty terminal); native deferred behind an explicit trigger.
+- **ARD-0042** — remote/hosted boring access model: trusted-share now → team-hosted target → public SaaS parked, with the egress internal-network blocks as a hard prerequisite.
+
 ## [0.13.0] — 2026-06-18
 
 ### Added
