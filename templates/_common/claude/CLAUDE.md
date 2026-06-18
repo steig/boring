@@ -73,3 +73,9 @@ This is a [boring](https://github.com/steig/boring)-managed dev container. Two n
 1. **Do not modify `.boring/*` files** under any circumstances. The profile at `.boring/profile.yaml` is the trust anchor that defines this container's sandbox — its mounts, ports, secrets, guardrails, allowed tools. Modifying it from inside the container defeats every guardrail at once. The Claude `Edit`/`Write` deny rules + a system-wide git pre-commit hook enforce this; respect them. Profile edits happen **on the host**, by humans, with intent (see [ARD-0006](https://github.com/steig/boring/blob/main/docs/ards/ard-0006-profile-is-the-trust-anchor.md)).
 
 2. **Respect the host repo's existing rules.** The wrapped repo may have its own `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` at the workspace root — especially anything about which branches not to push to, deploy gates, or PR workflows. Follow them. boring's job is to give you a safe sandbox, not to override the project's own conventions.
+
+## Per-profile workflow rules
+
+The rules below are generated from this project's `.boring/profile.yaml` guardrails (forbidden branches, forbidden commands) and mounted read-only by boring (ARD-0017). They are the Claude-side equivalent of the `AGENTS.md` OpenCode reads.
+
+@boring-profile.md
