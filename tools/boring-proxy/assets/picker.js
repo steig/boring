@@ -1,13 +1,16 @@
-// picker.js — vanilla, no framework. Fetches /api/projects, renders cards.
-// Kept intentionally tiny (~80 lines); the picker is read-only in v0.
+// picker.js — vanilla, no framework. Polls /api/projects and renders a live
+// "mission control" grid of project cards. Kept intentionally small; the
+// cockpit's multi-agent streaming panes (ARD-0041) land in a later slice.
 //
-// ARD-0021 §3: each card carries name, status badge, current-session summary,
-// presence indicator. v0 ships name + status + summary; presence TODO.
+// Each card shows name, live status (resolved server-side from socket
+// reachability), summary, and last-activity, and links into the project's
+// per-project route. Statuses auto-refresh on an interval.
 
 (function () {
   "use strict";
 
   const KNOWN_STATUSES = ["running", "starting", "stopped", "error"];
+  const REFRESH_MS = 4000;
 
   function el(tag, attrs, ...children) {
     const e = document.createElement(tag);
@@ -25,24 +28,46 @@
     return e;
   }
 
+  function statusOf(status) {
+    return KNOWN_STATUSES.includes(status) ? status : "stopped";
+  }
+
   function statusBadge(status) {
-    const cls = KNOWN_STATUSES.includes(status) ? status : "stopped";
-    return el("span", { class: "badge " + cls }, status || "stopped");
+    const s = statusOf(status);
+    return el("span", { class: "badge " + s }, el("span", { class: "dot" }), s);
+  }
+
+  // Compact relative time ("3m ago", "2h ago"); null when unparseable.
+  function relTime(iso) {
+    if (!iso) return null;
+    const t = Date.parse(iso);
+    if (isNaN(t)) return null;
+    const secs = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (secs < 60) return "just now";
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + "m ago";
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + "h ago";
+    return Math.floor(hrs / 24) + "d ago";
   }
 
   function renderCard(project) {
+    const last = relTime(project.last_active);
     return el(
-      "div",
+      "a",
       {
-        class: "card",
-        onclick: () => {
-          // v0: navigate to /<slug>/. If the container isn't up, the proxy
-          // renders a stub page. Real launch flow is TODO.
-          window.location.href = "/" + project.slug + "/";
-        },
+        class: "card status-" + statusOf(project.status),
+        href: project.url || "/" + project.slug + "/",
       },
-      el("div", { class: "name" }, project.name || project.slug, statusBadge(project.status)),
-      el("div", { class: "summary" }, project.summary || "—")
+      el("div", { class: "card-top" },
+        el("div", { class: "name" }, project.name || project.slug),
+        statusBadge(project.status)
+      ),
+      el("div", { class: "summary" }, project.summary || "No active session"),
+      el("div", { class: "meta" },
+        el("span", { class: "slug" }, project.slug),
+        last ? el("span", { class: "last" }, last) : null
+      )
     );
   }
 
@@ -51,14 +76,33 @@
     return el(
       "div",
       { class: "card add", onclick: () => alert("Add-project wizard: not yet implemented.") },
-      "+ Add a project"
+      el("span", { class: "plus" }, "+"),
+      "Add a project"
     );
+  }
+
+  function renderCounts(projects) {
+    const counts = document.getElementById("counts");
+    counts.innerHTML = "";
+    if (!projects.length) return;
+    const running = projects.filter((p) => statusOf(p.status) === "running").length;
+    counts.appendChild(el("span", { class: "count running" }, running + " running"));
+    counts.appendChild(el("span", { class: "count" }, projects.length + " total"));
+  }
+
+  function setConn(ok) {
+    const c = document.getElementById("conn");
+    c.textContent = ok ? "live" : "offline";
+    c.className = "conn" + (ok ? "" : " off");
   }
 
   function showError(msg) {
     const e = document.getElementById("error");
     e.textContent = msg;
     e.hidden = false;
+  }
+  function clearError() {
+    document.getElementById("error").hidden = true;
   }
 
   function render(projects) {
@@ -69,11 +113,13 @@
         el("div", { class: "empty" }, "No projects yet. Run `boring open <path>` to register one.")
       );
       grid.appendChild(renderAddCard());
+      renderCounts([]);
       return;
     }
     projects.sort((a, b) => (a.name || a.slug).localeCompare(b.name || b.slug));
     for (const p of projects) grid.appendChild(renderCard(p));
     grid.appendChild(renderAddCard());
+    renderCounts(projects);
   }
 
   function load() {
@@ -82,9 +128,19 @@
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
       })
-      .then((data) => render(data.projects || []))
-      .catch((err) => showError("Failed to load projects: " + err.message));
+      .then((data) => {
+        setConn(true);
+        clearError();
+        render(data.projects || []);
+      })
+      .catch((err) => {
+        setConn(false);
+        showError("Failed to load projects: " + err.message);
+      });
   }
 
-  document.addEventListener("DOMContentLoaded", load);
+  document.addEventListener("DOMContentLoaded", () => {
+    load();
+    setInterval(load, REFRESH_MS);
+  });
 })();

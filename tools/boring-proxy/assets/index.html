@@ -6,21 +6,26 @@
   <title>boring</title>
   <link rel="stylesheet" href="/assets/picker.css">
   <link rel="manifest" href="/assets/manifest.json">
-  <meta name="theme-color" content="#2d6cdf">
+  <meta name="theme-color" content="#0e1116">
   <link rel="icon" type="image/png" sizes="192x192" href="/assets/icon-192.png">
   <link rel="apple-touch-icon" sizes="192x192" href="/assets/icon-192.png">
 </head>
 <body>
   <header class="header">
-    <div class="brand">boring</div>
+    <div class="brand">boring<span class="brand-dot">.</span></div>
     <div class="user">
+      <span id="conn" class="conn" title="live status">live</span>
+      <span class="sep">|</span>
       <span id="user-label">you</span>
       <span class="sep">|</span>
       <a href="#" class="link" onclick="return false">Settings</a>
     </div>
   </header>
   <main>
-    <h1>Your projects</h1>
+    <div class="title-row">
+      <h1>Mission control</h1>
+      <div id="counts" class="counts"></div>
+    </div>
     <div id="error" class="error" hidden></div>
     <div id="projects" class="grid"></div>
   </main>

@@ -186,12 +186,15 @@ func TestPickerServesIndex(t *testing.T) {
 	}
 }
 
-// TestProjectsAPI — /api/projects returns JSON of registered projects.
+// TestProjectsAPI — /api/projects returns the dashboard card shape: per-project
+// slug, name, in-proxy URL, live status, and (when present) last_active/summary.
+// A registry that asserts "running" but has no live socket is downgraded to
+// "stopped" (the live-status check, per ARD-0041).
 func TestProjectsAPI(t *testing.T) {
 	tmp := t.TempDir()
 	regPath := filepath.Join(tmp, "registry.json")
 	regData := registryFile{Projects: []Project{
-		{Slug: "alpha", Name: "Alpha", Status: "running"},
+		{Slug: "alpha", Name: "Alpha", Status: "running", LastActive: "2026-06-18T10:00:00Z", Summary: "editing hero"},
 		{Slug: "beta", Name: "Beta", Status: "stopped"},
 	}}
 	b, _ := json.Marshal(regData)
@@ -207,12 +210,68 @@ func TestProjectsAPI(t *testing.T) {
 		t.Fatalf("GET: %v", err)
 	}
 	defer resp.Body.Close()
-	var data map[string][]Project
+	var data map[string][]projectCard
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(data["projects"]) != 2 {
-		t.Errorf("want 2 projects, got %d", len(data["projects"]))
+	cards := data["projects"]
+	if len(cards) != 2 {
+		t.Fatalf("want 2 projects, got %d", len(cards))
+	}
+	bySlug := map[string]projectCard{}
+	for _, c := range cards {
+		bySlug[c.Slug] = c
+	}
+	alpha, ok := bySlug["alpha"]
+	if !ok {
+		t.Fatal("alpha missing")
+	}
+	if alpha.URL != "/alpha/" {
+		t.Errorf("alpha url = %q, want /alpha/", alpha.URL)
+	}
+	// No live socket -> "running" in the registry is downgraded to "stopped".
+	if alpha.Status != "stopped" {
+		t.Errorf("alpha live status = %q, want stopped (no socket)", alpha.Status)
+	}
+	if alpha.LastActive != "2026-06-18T10:00:00Z" {
+		t.Errorf("alpha last_active = %q, unexpected", alpha.LastActive)
+	}
+	if alpha.Summary != "editing hero" {
+		t.Errorf("alpha summary = %q, unexpected", alpha.Summary)
+	}
+}
+
+// TestLiveStatus covers the socket-reachability resolution: a reachable socket
+// reads "running" regardless of the registry field; otherwise transients
+// (starting/error) pass through and everything else collapses to "stopped".
+func TestLiveStatus(t *testing.T) {
+	sockDir := testSocketDir(t)
+	liveSock := filepath.Join(sockDir, "live.sock")
+	ln, err := net.Listen("unix", liveSock)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer ln.Close()
+
+	missingSock := filepath.Join(sockDir, "missing.sock")
+
+	tests := []struct {
+		name string
+		p    Project
+		want string
+	}{
+		{"reachable socket overrides registry", Project{Slug: "a", Status: "stopped", Socket: liveSock}, "running"},
+		{"missing socket downgrades running", Project{Slug: "b", Status: "running", Socket: missingSock}, "stopped"},
+		{"missing socket preserves starting", Project{Slug: "c", Status: "starting", Socket: missingSock}, "starting"},
+		{"missing socket preserves error", Project{Slug: "d", Status: "error", Socket: missingSock}, "error"},
+		{"missing socket unknown becomes stopped", Project{Slug: "e", Status: "", Socket: missingSock}, "stopped"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := liveStatus(tc.p); got != tc.want {
+				t.Errorf("liveStatus = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
