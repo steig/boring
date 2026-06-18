@@ -4,6 +4,26 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-06-18
+
+### Added
+
+- **Machine-level profile overlay** at `${XDG_CONFIG_HOME:-~/.config}/boring/overlays/<name>.yaml`, merged after the repo overlay (machine wins), for per-machine operational facts (e.g. a DB port already taken on one box) that survive per-worktree overlay regeneration. Headless `boring run` ignores it. (ARD-0040, #8)
+- **boring-ui preview: multiple tabs + editable address bar.** `preview_urls:` renders one tab per declared upstream, each with its own dedicated-origin reverse proxy; the address bar navigates within the proxied origin. (ARD-0035, #7)
+- **`AgentProvider` contract for the boring-ui backend.** The agent harness is now a typed interface that threads boring's guardrails + audit through each turn: profile-resolved tool allowlist, `policy_blocked` events routed to the ARD-0010 audit FIFO with an `agent:` field, and claude session continuity via `--resume`. Makes the future claude→opencode swap an interface implementation. (ARD-0037, #11)
+- **SNI-aware egress proxy prototype** + 3-module Go CI. (ARD-0034, #4)
+- **emdash Cloudflare Workers example.** (#5)
+
+### Changed
+
+- **Profile overlays are now filtered to operational fields only.** Both the repo-local and machine-level overlays drop any security- or identity-relevant key (`egress`, `guardrails`, `allowed_paths`, `data_sensitivity`, `save`, `restore`, `claude`, `name`, `preset`, `profile_version`) and any `env` `secret://` URI, with a per-key warning — enforcing in code the previously documented-but-unenforced "overlays can't expand the surface" guarantee. (ARD-0040, #8)
+- **`data_sensitivity` is documented and treated as operator-asserted, not boring-verified.** `boring open` / `boring run` now warn when `data_sensitivity: sanitized` is declared but no `restore:` entry carries a boring-run `transform:` — i.e. sanitization happens outside boring's view and cannot be verified. (ARD-0039, #9)
+
+### Fixed
+
+- **`boring doctor` no longer false-negatives `dbx restore --transform`/`--into`.** dbx 0.x exposes no per-subcommand `--help`, so the old grep probe always failed; doctor now version-gates on dbx ≥ 0.11.0 (the release that shipped both flags). (#10)
+- **Hardened secret resolution** + escaping of literal `env` values in generated compose. (#3)
+
 ## [0.12.1] — 2026-06-04
 
 ### Fixed
