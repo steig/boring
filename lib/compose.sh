@@ -638,5 +638,21 @@ _compose_emit_devcontainer() {
       "remoteUser": "dev"
     }
     + (if $setup_cmd == "" then {} else {"postCreateCommand": $setup_cmd} end)
+    # ARD-0018: profile-declared VS Code extensions + workspace settings. The VS
+    # Code extensions array takes bare publisher.id, so strip any @version pin
+    # (the pin is recorded in the profile; autoUpdate:false keeps the installed
+    # version from drifting). extension_settings merges into settings.
+    + (
+        ($p.extensions // []) as $exts
+      | ($p.extension_settings // {}) as $extset
+      | if (($exts | length) > 0) or (($extset | length) > 0)
+        then {
+          "customizations": { "vscode": (
+            (if ($exts | length) > 0 then { "extensions": ($exts | map(split("@")[0])) } else {} end)
+            + { "settings": ($extset + (if ($exts | length) > 0 then {"extensions.autoUpdate": false} else {} end)) }
+          ) }
+        }
+        else {} end
+      )
   '
 }

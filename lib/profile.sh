@@ -493,6 +493,29 @@ _profile_validate_json() {
     done <<<"$bad"
   fi
 
+  # ARD-0018: extensions is a list of Marketplace ids (publisher.id, optional
+  # @version pin). Reject non-strings and ids that aren't publisher.id-shaped.
+  local ext_type
+  ext_type="$(jq -r '.extensions // [] | type' <<<"$json")"
+  if [[ "$ext_type" != "array" ]]; then
+    log_error "$source: extensions must be a list of publisher.id[@version] strings (got: $ext_type)"; _bump
+  else
+    bad="$(jq -r '(.extensions // []) | map(select(
+        (type != "string") or (test("^[^.@/[:space:]]+\\.[^.@/[:space:]]+(@[^[:space:]]+)?$") | not)
+      )) | .[] | tostring' <<<"$json")"
+    if [[ -n "$bad" ]]; then
+      while IFS= read -r e; do
+        log_error "$source: invalid extension '$e' (expected publisher.id or publisher.id@version)"; _bump
+      done <<<"$bad"
+    fi
+  fi
+  # extension_settings is a free-form VS Code settings object when present.
+  local extset_type
+  extset_type="$(jq -r 'if has("extension_settings") then (.extension_settings | type) else "object" end' <<<"$json")"
+  if [[ "$extset_type" != "object" ]]; then
+    log_error "$source: extension_settings must be an object/map of VS Code settings (got: $extset_type)"; _bump
+  fi
+
   ds="$(jq -r '.data_sensitivity // ""' <<<"$json")"
   if [[ -n "$ds" && "$ds" != "internal" && "$ds" != "sanitized" && "$ds" != "public" ]]; then
     log_error "$source: data_sensitivity must be one of internal/sanitized/public (got: $ds)"; _bump
@@ -932,6 +955,12 @@ _profile_normalize() {
         })),
         mounts: (($p.mounts // []) | map(parse_mount)),
         forward_ports: ($p.forward_ports // []),
+        # ARD-0018: profile-declared VS Code extensions (publisher.id[@version])
+        # + workspace settings. Preset-default + shared-agent-layer merging is a
+        # codegen-time concern (a content follow-up); normalize just carries the
+        # declared values through.
+        extensions: ($p.extensions // []),
+        extension_settings: ($p.extension_settings // {}),
         env: (($p.env // {}) | with_entries(.value |= parse_env_value)),
         egress: { allow: ($p.egress.allow // []) },
         data_sensitivity: ($p.data_sensitivity // "internal"),
