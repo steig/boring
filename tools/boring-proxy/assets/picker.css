@@ -253,8 +253,6 @@ h1 {
   padding: 0 0.5rem;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
-  overflow-x: auto;
-  scrollbar-width: thin;
 }
 
 .home-tab {
@@ -276,6 +274,9 @@ h1 {
   align-items: stretch;
   gap: 0.25rem;
   min-width: 0;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .tab {
