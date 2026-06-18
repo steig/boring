@@ -93,11 +93,27 @@ type AITextData struct {
 // the mock emits an empty object, the claude provider fills in cost/duration
 // when the upstream `result` event provides them. Error is set only on
 // non-success turn termination.
+//
+// Verdict classifies the turn outcome (ARD-0038 §1/§2). A clean `result` with
+// at least one ai_text or tool_call is VerdictOK; a result carrying an error is
+// VerdictAgentError; a result with zero ai_text AND zero tool_call is
+// VerdictAgentNoOutput (the "exit 0, produced nothing" class boring adopts from
+// sandboxes); a process that dies without a result is VerdictNonzeroExit. Empty
+// verdict means "not classified" (e.g. the mock).
 type TurnCompleteData struct {
 	CostUSD    float64 `json:"cost_usd,omitempty"`
 	DurationMS int64   `json:"duration_ms,omitempty"`
 	Error      string  `json:"error,omitempty"`
+	Verdict    string  `json:"verdict,omitempty"`
 }
+
+// Turn verdicts (ARD-0038). Harness-agnostic — set in the ParseStream layer.
+const (
+	VerdictOK            = "ok"
+	VerdictAgentNoOutput = "agent_no_output"
+	VerdictAgentError    = "agent_error"
+	VerdictNonzeroExit   = "nonzero_exit"
+)
 
 type ToolCallData struct {
 	Tool string          `json:"tool"`

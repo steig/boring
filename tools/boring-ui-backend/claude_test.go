@@ -127,6 +127,47 @@ func TestParseClaudeStream_TextOnlyTurn(t *testing.T) {
 	}
 }
 
+// fixtureTurnNoOutput is a clean (exit-0) turn that produced nothing — no
+// ai_text, no tool_call — the agent_no_output class (ARD-0038).
+const fixtureTurnNoOutput = `{"type":"system","subtype":"init"}
+{"type":"result","subtype":"success","is_error":false,"result":"","duration_ms":5,"total_cost_usd":0}
+`
+
+func lastTurnComplete(t *testing.T, envs []Envelope) TurnCompleteData {
+	t.Helper()
+	for i := len(envs) - 1; i >= 0; i-- {
+		if envs[i].Type == EventTurnComplete {
+			var tc TurnCompleteData
+			if err := json.Unmarshal(envs[i].Data, &tc); err != nil {
+				t.Fatalf("turn_complete decode: %v", err)
+			}
+			return tc
+		}
+	}
+	t.Fatal("no turn_complete envelope")
+	return TurnCompleteData{}
+}
+
+func TestParseClaudeStream_Verdict(t *testing.T) {
+	cases := []struct{ name, fixture, want string }{
+		{"text turn", fixtureTurnText, VerdictOK},
+		{"tool-use turn", fixtureTurnToolUse, VerdictOK},
+		{"error result", fixtureTurnError, VerdictAgentError},
+		{"clean but empty", fixtureTurnNoOutput, VerdictAgentNoOutput},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			emit, envs := captureEmit()
+			if _, err := parseClaudeStream(strings.NewReader(c.fixture), emit); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := lastTurnComplete(t, *envs).Verdict; got != c.want {
+				t.Errorf("verdict=%q want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestParseClaudeStream_ToolUseAndFollowUp(t *testing.T) {
 	emit, envs := captureEmit()
 	if _, err := parseClaudeStream(strings.NewReader(fixtureTurnToolUse), emit); err != nil {
