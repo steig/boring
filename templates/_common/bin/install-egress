@@ -122,19 +122,29 @@ resolver_ips() { awk '/^[[:space:]]*nameserver/ {print $2}' /etc/resolv.conf 2>/
 # the allowlist loop just above this call, so any allowlisted host that resolves
 # into a private range is already ACCEPTed and beats these drops.
 install_cross_sandbox_v4() {
-  for r in $(resolver_ips); do
-    case "$r" in *.*) iptables -A OUTPUT -d "$r" -j ACCEPT ;; esac
-  done
+  # Resolve every declared sidecar FIRST. If any won't resolve, fail OPEN:
+  # restore the old blanket subnet ACCEPT and install no drops this run, so a
+  # slow-to-boot sidecar can never sever dev -> postgres/redis. (The blanket
+  # ACCEPT must go back; without it the subnet would fall through to the enforce
+  # REJECT tail — fail-closed, the opposite of what we want.)
+  sidecar_ips=""
   for svc in $(printf '%s' "$SIDECARS" | tr ',' ' '); do
     [ -z "$svc" ] && continue
     ips="$(getent ahostsv4 "$svc" 2>/dev/null | awk '{print $1}' | sort -u)"
     if [ -z "$ips" ]; then
-      log "warning: could not resolve sidecar '$svc' (v4); skipping cross_sandbox/RFC1918 drops this run (fail-open)"
+      log "warning: could not resolve sidecar '$svc' (v4); leaving the docker subnet open this run — cross_sandbox/RFC1918 drops skipped (fail-open)"
+      iptables -A OUTPUT -d "$NET_CIDR" -j ACCEPT
       return 1
     fi
-    for ip in $ips; do
-      iptables -A OUTPUT -d "$ip" -j ACCEPT
-    done
+    sidecar_ips="$sidecar_ips $ips"
+  done
+  # Carve out the resolver + each resolved sidecar IP, then drop the rest of the
+  # docker subnet and the RFC1918 ranges.
+  for r in $(resolver_ips); do
+    case "$r" in *.*) iptables -A OUTPUT -d "$r" -j ACCEPT ;; esac
+  done
+  for ip in $sidecar_ips; do
+    iptables -A OUTPUT -d "$ip" -j ACCEPT
   done
   iptables -A OUTPUT -d "$NET_CIDR" -j DROP            # cross_sandbox: rest of docker subnet
   iptables -A OUTPUT -d 10.0.0.0/8     -j DROP         # RFC1918
