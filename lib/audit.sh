@@ -233,14 +233,18 @@ audit_collector_stop() {
 
 # audit_cat_security <profile-name>
 audit_cat_security() {
-  local profile="$1" path
+  local profile="$1" agent="${2:-}" path
   path="$(audit_security_log "$profile")"
   if [[ ! -f "$path" ]]; then
     log_warn "no security events recorded yet at $path"
     return 0
   fi
   if command -v jq >/dev/null 2>&1; then
-    jq . "$path"
+    if [[ -n "$agent" ]]; then
+      jq --arg a "$agent" 'select(.agent == $a)' "$path"
+    else
+      jq . "$path"
+    fi
   else
     cat "$path"
   fi
@@ -249,14 +253,18 @@ audit_cat_security() {
 # audit_cat_prompts <profile-name> <visibility>
 # Visibility comes from the resolved profile; passed in by cmd_audit.
 audit_cat_prompts() {
-  local profile="$1" visibility="${2:-per_user}" path
+  local profile="$1" visibility="${2:-per_user}" agent="${3:-}" path
   path="$(audit_prompts_log "$profile" "$visibility")"
   if [[ ! -f "$path" ]]; then
     log_warn "no prompt events recorded yet at $path"
     return 0
   fi
   if command -v jq >/dev/null 2>&1; then
-    jq . "$path"
+    if [[ -n "$agent" ]]; then
+      jq --arg a "$agent" 'select(.agent == $a)' "$path"
+    else
+      jq . "$path"
+    fi
   else
     cat "$path"
   fi

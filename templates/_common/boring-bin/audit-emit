@@ -49,26 +49,30 @@ payload="$(head -c 65536 2>/dev/null || true)"
 ts="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
 profile="${BORING_PROFILE_NAME:-unknown}"
 user="${BORING_HOST_USER:-${USER:-unknown}}"
+# ARD-0027: every event carries the agent that produced it so `boring audit
+# --agent` can filter by harness. This shim is invoked by Claude Code's hooks,
+# so it defaults to claude; BORING_AGENT lets another harness override it.
+agent="${BORING_AGENT:-claude}"
 
 if command -v jq >/dev/null 2>&1; then
   # Try to parse payload as JSON; if it parses, embed as a JSON object/value,
   # else embed as a string in details.raw.
   if printf '%s' "$payload" | jq -e . >/dev/null 2>&1; then
     envelope="$(jq -nc \
-      --arg ts "$ts" --arg kind "$kind" --arg profile "$profile" --arg user "$user" \
+      --arg ts "$ts" --arg kind "$kind" --arg profile "$profile" --arg user "$user" --arg agent "$agent" \
       --argjson details "${payload:-{\}}" \
-      '{ts:$ts, kind:$kind, profile:$profile, user:$user, details:$details}')"
+      '{ts:$ts, kind:$kind, profile:$profile, user:$user, agent:$agent, details:$details}')"
   else
     envelope="$(jq -nc \
-      --arg ts "$ts" --arg kind "$kind" --arg profile "$profile" --arg user "$user" \
+      --arg ts "$ts" --arg kind "$kind" --arg profile "$profile" --arg user "$user" --arg agent "$agent" \
       --arg raw "$payload" \
-      '{ts:$ts, kind:$kind, profile:$profile, user:$user, details:{raw:$raw}}')"
+      '{ts:$ts, kind:$kind, profile:$profile, user:$user, agent:$agent, details:{raw:$raw}}')"
   fi
 else
   # Fallback (image without jq — shouldn't happen but defensive). Strip
   # newlines + quotes from payload, embed as raw string. Lossy but safe.
   safe="$(printf '%s' "$payload" | tr -d '\n\r' | sed 's/"/\\"/g')"
-  envelope="{\"ts\":\"$ts\",\"kind\":\"$kind\",\"profile\":\"$profile\",\"user\":\"$user\",\"details\":{\"raw\":\"$safe\"}}"
+  envelope="{\"ts\":\"$ts\",\"kind\":\"$kind\",\"profile\":\"$profile\",\"user\":\"$user\",\"agent\":\"$agent\",\"details\":{\"raw\":\"$safe\"}}"
 fi
 
 # Write atomically: one printf, single FD, no flushing concerns at this size.
