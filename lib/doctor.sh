@@ -113,6 +113,53 @@ doctor_run() {
     log_info "  None present. Install on-demand when a profile needs one."
   fi
 
+  log_step "Repo-side safety nets (ARD-0016)"
+  # boring assumes the default branch is protected so the in-container agent can
+  # propose but not push. We only REPORT — boring never enables protection
+  # (that's a repo-admin decision, ARD-0016 §4). Absence is a warn, not a fail.
+  if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    log_info "Not inside a git repository — run 'boring doctor' from your project to check branch protection + PR template."
+  else
+    local _origin
+    _origin="$(git remote get-url origin 2>/dev/null || true)"
+    if [[ "$_origin" != *github.com* ]]; then
+      log_info "origin is not GitHub${_origin:+ ($_origin)} — branch-protection check skipped (host not supported)."
+    elif ! command -v gh &>/dev/null; then
+      log_warn "gh CLI not present — cannot check branch protection (ARD-0016). Install gh, then 'gh auth login'."
+    else
+      local _nwo _branch _prot
+      if ! _nwo="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || [[ -z "$_nwo" ]]; then
+        log_warn "could not resolve the GitHub repo (gh not authenticated?) — branch-protection check skipped. Run: gh auth login"
+      else
+        _branch="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)"
+        _branch="${_branch:-main}"
+        if _prot="$(gh api "repos/$_nwo/branches/$_branch/protection" 2>/dev/null)"; then
+          local _pr _rev _force
+          _pr="$(jq -r 'if .required_pull_request_reviews then "yes" else "no" end' <<<"$_prot")"
+          _rev="$(jq -r '.required_pull_request_reviews.required_approving_review_count // 0' <<<"$_prot")"
+          _force="$(jq -r 'if .allow_force_pushes.enabled then "allowed" else "blocked" end' <<<"$_prot")"
+          if [[ "$_pr" == "yes" && "$_rev" -ge 1 && "$_force" == "blocked" ]]; then
+            log_success "$_nwo@$_branch protected — PR required, $_rev approving review(s), force-push blocked."
+          else
+            log_warn "$_nwo@$_branch protection is incomplete (ARD-0016): PR-required=$_pr, approving-reviews=$_rev, force-push=$_force."
+            log_info "  Want: require a PR + at least 1 non-author review, block force-push and direct push."
+          fi
+        else
+          log_warn "$_nwo@$_branch is NOT protected (or not visible to you) — the in-container AI can push to it directly (ARD-0016)."
+          log_info "  Enable: require a PR + at least 1 review, block force-push + direct push. boring won't do this for you (ARD-0016 §4)."
+        fi
+      fi
+    fi
+    # PR template — existence-based, host-agnostic.
+    local _root
+    _root="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+    if [[ -f "$_root/.github/PULL_REQUEST_TEMPLATE.md" ]]; then
+      log_success "PR template present (.github/PULL_REQUEST_TEMPLATE.md)."
+    else
+      log_warn "no .github/PULL_REQUEST_TEMPLATE.md — copy one from templates/<preset>/.github/ (ARD-0016)."
+    fi
+  fi
+
   echo
   if [[ $fail -eq 0 ]]; then
     log_success "All required dependencies present."
