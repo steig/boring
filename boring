@@ -721,7 +721,9 @@ cmd_run() {
 
   log_step "Loading profile from $repo/.boring/profile.yaml"
   local profile_json
-  profile_json="$(profile_load "$repo")"
+  # Headless run ignores the machine-level overlay (ARD-0040) so a host-local
+  # file can't alter a scripted/CI run's resolved posture.
+  profile_json="$(profile_load "$repo" 0)"
 
   local profile_name
   profile_name="$(jq -r '.name' <<<"$profile_json")"

@@ -74,22 +74,18 @@ doctor_run() {
     local v
     v="$(dbx --version 2>/dev/null | head -1 || echo 'version unknown')"
     log_success "dbx present ($v)"
-    # ARD-0012 needs `--transform` and `--into` on `dbx restore`. Pre-flight
-    # with --help so a profile that uses restore: doesn't fail mid-open.
-    # The help output is the most stable surface; grep is intentional.
-    local help
-    help="$(dbx restore --help 2>&1 || true)"
-    if echo "$help" | grep -q -- "--transform"; then
-      log_success "dbx restore --transform available (ARD-0012 streaming sanitize)"
+    # ARD-0012 needs `--transform` and `--into` on `dbx restore`. We can't probe
+    # the flags directly: dbx 0.x has no per-subcommand --help (`dbx restore
+    # --help` errors "Unknown option"), `dbx help` lists commands not flags, and
+    # `dbx restore` with no args blocks on stdin. Both flags shipped together in
+    # dbx v0.11.0, so the version is the only reliable signal (ARD-0012 §4).
+    local dbx_ver
+    dbx_ver="$(dbx --version 2>/dev/null | head -1 | awk '{print $NF}')"
+    if dbx_version_ge "$dbx_ver" "$MIN_DBX_RESTORE_VERSION"; then
+      log_success "dbx restore --transform/--into available (dbx $dbx_ver >= $MIN_DBX_RESTORE_VERSION, ARD-0012)"
     else
-      log_warn "dbx restore --transform NOT available — profiles using restore: with data_sensitivity:sanitized will fail"
-      log_info "  Update dbx: dbx-side feature/restore-transform-into needs to land or you need to update an older dbx"
-    fi
-    if echo "$help" | grep -q -- "--into"; then
-      log_success "dbx restore --into available (ARD-0012 sidecar targeting)"
-    else
-      log_warn "dbx restore --into NOT available — profiles with restore: will fail"
-      log_info "  Update dbx: same dependency as --transform above"
+      log_warn "dbx restore --transform/--into NOT available — profiles using restore: will fail (need dbx >= $MIN_DBX_RESTORE_VERSION, found ${dbx_ver:-unknown})"
+      log_info "  Update dbx: curl -fsSL https://raw.githubusercontent.com/steig/dbx/main/install.sh | bash"
     fi
   else
     log_error "dbx not found."

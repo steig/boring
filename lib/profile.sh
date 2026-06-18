@@ -59,11 +59,63 @@ profile_validate() {
   _profile_validate_json "$json" "$yaml_path"
 }
 
-# profile_load <repo-path>
-# Reads .boring/profile.yaml, merges .boring/profile.overlay.yaml if present,
-# validates, applies theme presets, prints normalized JSON.
+# _profile_strip_overlay_fields <overlay-json> <source-label>
+# ARD-0040: a profile overlay (repo-local OR machine-level) may carry only
+# OPERATIONAL fields. Any security- or identity-relevant key is dropped before
+# merge — with a per-key warning — so the trust anchor (ARD-0006) lives solely
+# in the committed, reviewed .boring/profile.yaml. This also makes real the
+# docs/profile-reference.md guarantee that overlays "cannot expand the surface,"
+# which was documented but unenforced until now. Prints filtered JSON.
+_profile_strip_overlay_fields() {
+  local json="$1" source="$2" k
+  # Whole top-level keys never accepted from an overlay. egress.allow,
+  # guardrails.*, save.*, restore.*, and claude.mcp all live under one of these,
+  # so dropping the parent covers them. `theme` is the deprecated alias for the
+  # denied `preset` (ARD-0007), denied here so it can't sneak past the rewrite.
+  for k in egress guardrails allowed_paths disallowed_paths data_sensitivity \
+           save restore claude name preset theme profile_version; do
+    if [[ "$(jq --arg k "$k" 'has($k)' <<<"$json")" == "true" ]]; then
+      log_warn "$source: ignoring '$k:' — overlays cannot override security/identity fields (ARD-0040); set it in .boring/profile.yaml."
+      json="$(jq --arg k "$k" 'del(.[$k])' <<<"$json")"
+    fi
+  done
+  # env: literal value overrides are allowed (ports, hosts); secret:// URIs are
+  # not — an overlay must not introduce or repoint a secret (ARD-0002/ARD-0040).
+  local ek secret_keys
+  secret_keys="$(jq -r '(.env // {}) | to_entries
+    | map(select((.value | type == "string") and (.value | startswith("secret://"))))
+    | .[].key' <<<"$json")"
+  while IFS= read -r ek; do
+    [[ -z "$ek" ]] && continue
+    log_warn "$source: ignoring env.$ek — overlays cannot set secret:// values (ARD-0040); declare secrets in .boring/profile.yaml."
+    json="$(jq --arg k "$ek" 'del(.env[$k])' <<<"$json")"
+  done <<<"$secret_keys"
+  printf '%s' "$json"
+}
+
+# _profile_merge_overlay <base-json> <overlay-file> <source-label>
+# Reads an overlay YAML file, strips disallowed fields (ARD-0040), and
+# deep-merges it onto base-json with the overlay winning. Prints merged JSON;
+# returns 1 on invalid overlay YAML.
+_profile_merge_overlay() {
+  local base_json="$1" overlay_file="$2" source="$3" ov_json
+  if ! ov_json="$(yq -o=json '.' "$overlay_file" 2>&1)"; then
+    log_error "$source: invalid YAML: $ov_json"
+    return 1
+  fi
+  ov_json="$(_profile_strip_overlay_fields "$ov_json" "$source")"
+  # jq '*' deep-merges objects recursively (overlay wins; arrays replaced) —
+  # the same semantics as the prior yq merge, applied to a pre-filtered overlay.
+  jq -n --argjson base "$base_json" --argjson ov "$ov_json" '$base * $ov'
+}
+
+# profile_load <repo-path> [include-machine-overlay=1]
+# Reads .boring/profile.yaml, merges the repo-local overlay then the
+# machine-level overlay (ARD-0040; machine wins, both field-filtered),
+# validates, applies presets, prints normalized JSON. Pass 0 as the second arg
+# to skip the machine overlay (headless `boring run` — ARD-0040).
 profile_load() {
-  local repo="$1"
+  local repo="$1" include_machine="${2:-1}"
   [[ -z "$repo" ]] && die "profile_load: missing repo path argument"
   [[ -d "$repo" ]] || die "profile_load: not a directory: $repo"
   require_cmd_yq
@@ -73,15 +125,28 @@ profile_load() {
   [[ -f "$base" ]] || die "profile_load: no profile at $base"
 
   local merged_json
+  if ! merged_json="$(yq -o=json '.' "$base" 2>&1)"; then
+    die "profile_load: invalid YAML in $base: $merged_json"
+  fi
+
+  # Repo-local overlay — commonly regenerated per-worktree by tooling, so it
+  # carries operational deltas only (the field filter enforces that).
   if [[ -f "$overlay" ]]; then
-    # yq's deep-merge idiom; overlay wins on conflicts.
-    if ! merged_json="$(yq -o=json eval-all \
-        '. as $item ireduce ({}; . * $item)' "$base" "$overlay" 2>&1)"; then
-      die "profile_load: failed to merge $overlay onto $base: $merged_json"
-    fi
-  else
-    if ! merged_json="$(yq -o=json '.' "$base" 2>&1)"; then
-      die "profile_load: invalid YAML in $base: $merged_json"
+    merged_json="$(_profile_merge_overlay "$merged_json" "$overlay" "$overlay")" \
+      || die "profile_load: failed to merge $overlay onto $base"
+  fi
+
+  # Machine-level overlay (ARD-0040): per-machine operational facts kept outside
+  # the repo (so per-worktree regeneration can't clobber them), applied AFTER
+  # the repo overlay so the machine wins. Keyed by profile name. Skipped for
+  # headless `boring run` so a host-local file can't alter a scripted run.
+  if [[ "$include_machine" == "1" ]]; then
+    local pname machine_overlay
+    pname="$(jq -r '.name // ""' <<<"$merged_json")"
+    machine_overlay="${XDG_CONFIG_HOME:-$HOME/.config}/boring/overlays/${pname}.yaml"
+    if [[ -n "$pname" && -f "$machine_overlay" ]]; then
+      merged_json="$(_profile_merge_overlay "$merged_json" "$machine_overlay" "machine overlay ($machine_overlay)")" \
+        || die "profile_load: failed to merge $machine_overlay"
     fi
   fi
 
@@ -431,6 +496,20 @@ _profile_validate_json() {
   ds="$(jq -r '.data_sensitivity // ""' <<<"$json")"
   if [[ -n "$ds" && "$ds" != "internal" && "$ds" != "sanitized" && "$ds" != "public" ]]; then
     log_error "$source: data_sensitivity must be one of internal/sanitized/public (got: $ds)"; _bump
+  fi
+
+  # ARD-0039: data_sensitivity is operator-asserted, not boring-enforced. When
+  # 'sanitized' is claimed but no restore: entry carries a transform boring
+  # runs, the sanitization happens outside boring's view and the claim is
+  # unverifiable. Warn (not error) — boring cannot prove an external pipeline
+  # didn't scrub the data, so refusing to load would false-negative legitimate
+  # host-side sanitization. A boring-wired restore:+transform: does NOT warn.
+  if [[ "$ds" == "sanitized" ]]; then
+    local sanitizing_restores
+    sanitizing_restores="$(jq -r '(.restore // []) | map(select((.transform // "") != "")) | length' <<<"$json")"
+    if [[ "$sanitizing_restores" == "0" ]]; then
+      log_warn "$source: data_sensitivity: sanitized is declared but no restore: entry has a transform boring runs — sanitization happens outside boring's view and is NOT verified. Confirm your external pipeline actually scrubs PII (ARD-0039)."
+    fi
   fi
 
   # ARD-0010 §4: audit.prompts is per_user|shared, default per_user. The default

@@ -350,17 +350,19 @@ Per-entry fields:
 
 Idempotent by default via per-entry marker files at `~/.local/share/boring/restore-state/<profile>/<idx>-<target>.complete`. `boring restore <path> --refresh` clears markers and re-runs.
 
-## `data_sensitivity` — gating ephemeral volumes (v0.5)
+## `data_sensitivity` — operator-asserted data classification
 
 ```yaml
 data_sensitivity: internal      # internal | sanitized | public
 ```
 
 - **`internal`** — no real data ever in this container. `restore:` is rejected at profile parse.
-- **`sanitized`** — real-shape data allowed, but every `restore:` entry must declare a `transform:`. Volumes go ephemeral (`tmpfs` or auto-deleted on container teardown).
+- **`sanitized`** — real-shape data allowed, but every `restore:` entry must declare a `transform:`.
 - **`public`** — anything goes.
 
-The field has been parsed-but-no-op since v0.2; v0.5 makes it load-bearing.
+**What boring enforces vs. what you assert.** boring enforces the parse-time interlocks above (`internal` forbids `restore:`; `sanitized` requires a `transform:` on each `restore:` entry). It does **not** verify data that arrives outside its view: if you declare `sanitized` but provision data with a host-side script and no boring-run `restore:` + `transform:`, boring cannot confirm the data was actually scrubbed — so `boring open` / `boring run` emits a warning. `data_sensitivity` is an **operator assertion, not a guarantee boring can back**. ([ARD-0039](ards/ard-0039-data-sensitivity-operator-asserted.md))
+
+> The DB-volume ephemerality originally envisioned for this field ([ARD-0001](ards/ard-0001-v1-architecture.md)) is not yet implemented; today the value gates `restore:` and drives the warning above.
 
 ---
 
@@ -399,9 +401,14 @@ The in-container Claude lives in a sandbox: this project's MCP servers, this pro
 
 ---
 
-## Profile overlays — the user-local escape hatch
+## Profile overlays — host-local and machine-local tweaks
 
-For host-specific tweaks that shouldn't live in the shared profile, create `.boring/profile.overlay.yaml` (gitignored by convention) next to `profile.yaml`. boring deep-merges the overlay on top of the base profile at load time.
+For settings that shouldn't live in the shared, committed profile, boring merges up to two overlays on top of `.boring/profile.yaml` at load time, **last wins**:
+
+1. **Repo-local overlay** — `.boring/profile.overlay.yaml` (gitignored by convention), next to `profile.yaml`. Per-worktree tooling commonly regenerates this file.
+2. **Machine-level overlay** — `${XDG_CONFIG_HOME:-~/.config}/boring/overlays/<profile-name>.yaml`, merged **after** the repo overlay (so the machine wins). It lives outside the repo, so regeneration of the repo overlay can't clobber it — the right home for per-machine facts like a port that's already taken on one developer's box (`DB_PORT: "5433"`). ([ARD-0040](ards/ard-0040-machine-level-profile-overlay.md))
+
+Merge order: **`profile.yaml` → repo overlay → machine overlay**. Headless `boring run` ignores the machine overlay, so a host-local file can't alter a scripted/CI run's resolved posture.
 
 Common uses:
 
@@ -409,7 +416,7 @@ Common uses:
 - A different `preset_version.python` on their machine.
 - A literal `env` override for a value that varies per host.
 
-The overlay can NOT add `secret://` URIs that the base profile doesn't declare — overlays can't expand the surface, only adjust it.
+**Overlays carry operational fields only — they cannot weaken the trust anchor.** Both overlays are filtered before merge: any security- or identity-relevant key is dropped (with a warning) and taken solely from the committed, reviewed `profile.yaml` ([ARD-0006](ards/ard-0006-profile-is-the-trust-anchor.md)). Overlays may **not** set `egress`, `guardrails`, `allowed_paths`, `disallowed_paths`, `data_sensitivity`, `save`, `restore`, `claude`, `name`, `preset`, or `profile_version`, and may **not** introduce `secret://` URIs under `env` (literal `env` overrides are fine). This is enforced in `lib/profile.sh`, not just convention. ([ARD-0040](ards/ard-0040-machine-level-profile-overlay.md))
 
 ---
 
