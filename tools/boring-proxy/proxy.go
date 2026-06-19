@@ -260,7 +260,8 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Content-Security-Policy",
 		"default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "+
-			"connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+			"connect-src 'self'; frame-src 'self'; manifest-src 'self'; worker-src 'self'; "+
+			"frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
@@ -343,12 +344,51 @@ func buildProxy(slug, sock string) *httputil.ReverseProxy {
 			pr.Out.URL.Path = rest
 			pr.Out.Host = "unix"
 		},
+		// The cockpit shell embeds each project's page in a same-origin iframe
+		// (ARD-0041). The proxy and the project page share an origin, so a
+		// frame-blocking header from the backend would needlessly break the
+		// embed. Relax X-Frame-Options and the CSP frame-ancestors directive to
+		// permit same-origin framing; the rest of the backend's CSP is preserved.
+		ModifyResponse: allowSameOriginFraming,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			log.Printf("upstream error (slug=%s): %v", slug, err)
 			setSecurityHeaders(w)
 			http.Error(w, "upstream backend error", http.StatusBadGateway)
 		},
 	}
+}
+
+// allowSameOriginFraming rewrites a backend response's frame-blocking headers
+// so the cockpit can embed the project page in a same-origin iframe. It drops
+// X-Frame-Options entirely (it has no "same-origin only via this proxy" form
+// that survives the shared origin) and rewrites any CSP frame-ancestors
+// directive to 'self', leaving the remaining CSP directives untouched. This
+// applies to every proxied response (not just top-level documents); that's
+// acceptable under boring-ui's same-origin, single-user trust model.
+func allowSameOriginFraming(resp *http.Response) error {
+	resp.Header.Del("X-Frame-Options")
+	if csp := resp.Header.Get("Content-Security-Policy"); csp != "" {
+		resp.Header.Set("Content-Security-Policy", rewriteFrameAncestors(csp))
+	}
+	return nil
+}
+
+// rewriteFrameAncestors replaces the value of a frame-ancestors directive with
+// 'self' (adding one if absent), preserving every other directive in order.
+func rewriteFrameAncestors(csp string) string {
+	directives := strings.Split(csp, ";")
+	found := false
+	for i, d := range directives {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(d)), "frame-ancestors") {
+			directives[i] = " frame-ancestors 'self'"
+			found = true
+		}
+	}
+	out := strings.Join(directives, ";")
+	if !found {
+		out = strings.TrimRight(out, " ;") + "; frame-ancestors 'self'"
+	}
+	return out
 }
 
 // verifySocketOwner confirms the socket's owner uid matches the current

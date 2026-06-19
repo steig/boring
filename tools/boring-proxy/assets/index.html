@@ -21,7 +21,19 @@
       <a href="#" class="link" onclick="return false">Settings</a>
     </div>
   </header>
-  <main>
+
+  <nav id="tabbar" class="tabbar">
+    <button id="home-tab" class="tab home-tab" title="Mission control">
+      <span class="tab-home-glyph">⊞</span>
+    </button>
+    <div id="tabs" class="tabs"></div>
+    <div class="tab-add-wrap">
+      <button id="add-tab" class="tab-add" title="Open a project">+</button>
+      <div id="add-menu" class="add-menu" hidden></div>
+    </div>
+  </nav>
+
+  <main id="home-view">
     <div class="title-row">
       <h1>Mission control</h1>
       <div id="counts" class="counts"></div>
@@ -29,11 +41,9 @@
     <div id="error" class="error" hidden></div>
     <div id="projects" class="grid"></div>
   </main>
+
+  <div id="tab-views" class="tab-views"></div>
+
   <script src="/assets/picker.js"></script>
-  <script>
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/assets/sw.js").catch(() => {});
-    }
-  </script>
 </body>
 </html>
