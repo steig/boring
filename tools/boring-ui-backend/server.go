@@ -33,13 +33,24 @@ import (
 //go:embed assets/index.html assets/chat.css assets/chat.js
 var assetsFS embed.FS
 
+// TerminalTab is one agent's iframe entry in the LEFT pane (ARD-0035 §1).
+// When the Server has 0 tabs, the left pane renders the SSE chat UI; with
+// exactly 1 tab the left pane renders a single iframe (no tab strip, preserves
+// v0.12.0 visual behavior); with ≥2 tabs the left pane renders a tab strip
+// above N iframes, only the active one visible.
+type TerminalTab struct {
+	Name string // tab label (also the agent's slug-suffix in lib/web_ui.sh port allocation)
+	URL  string // absolute URL the iframe loads (ttyd serving the agent's CLI inside the container)
+}
+
 // Server bundles the long-lived state for one project's backend.
 type Server struct {
 	Slug         string
 	Workdir      string   // project working directory (used by /api/save AND turn spawn)
 	PreviewURL   string   // absolute UPSTREAM URL being previewed (per ARD-0022 §6); shown in the header strip + open-in-new-tab link. Empty -> fallback message.
 	PreviewFrameURL string // absolute URL the right-pane iframe actually loads: the dedicated-origin preview proxy, e.g. http://127.0.0.1:<port>/ (ARD-0033). Empty even when PreviewURL is set -> fallback (no preview port wired).
-	TerminalURL  string   // absolute URL the LEFT-pane iframe loads when set (replaces chat thread w/ embedded terminal, e.g. ttyd serving claude); empty -> SSE chat UI
+	TerminalURL  string   // DEPRECATED back-compat: absolute URL for a single LEFT-pane iframe. Replaced by TerminalTabs (ARD-0035) — when both are set, TerminalTabs wins. Empty + empty TerminalTabs -> SSE chat UI.
+	TerminalTabs []TerminalTab // ARD-0035: 0 entries -> chat UI; 1 entry -> single iframe; ≥2 entries -> tab strip + N iframes
 	Provider     string   // "mock" | "claude" — selects the turn runner in handleMessages
 	AllowedPaths []string // resolved workdir-relative glob set for reactive path-allowlist enforcement (ARD-0029 §6 gap #1); empty -> no enforcement
 	Broadcaster  *Broadcaster
@@ -119,31 +130,83 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(renderIndex(string(data), s.PreviewURL, s.PreviewFrameURL, s.TerminalURL)))
+	_, _ = w.Write([]byte(renderIndex(string(data), s.PreviewURL, s.PreviewFrameURL, s.activeTerminalTabs())))
+}
+
+// activeTerminalTabs resolves the effective TerminalTabs list. When the
+// caller populated TerminalTabs directly (ARD-0035 multi-agent path) it wins;
+// otherwise the legacy TerminalURL string is auto-promoted to a single tab
+// named "default" so v0.12.0 callers keep working without code changes.
+func (s *Server) activeTerminalTabs() []TerminalTab {
+	if len(s.TerminalTabs) > 0 {
+		return s.TerminalTabs
+	}
+	if s.TerminalURL != "" {
+		return []TerminalTab{{Name: "default", URL: s.TerminalURL}}
+	}
+	return nil
 }
 
 // renderIndex performs serve-time substitution of the pane content.
 // The template carries {{PREVIEW_PANE}} (right pane) and {{LEFT_PANE}}
-// (left pane: terminal iframe when TerminalURL set, SSE chat UI otherwise).
+// (left pane: tab strip + iframes when TerminalTabs has ≥2 entries, a single
+// iframe when exactly 1 entry, SSE chat UI when 0).
 //
 // We don't use html/template because the only dynamic values are CLI flags
 // (not user-supplied), and we want the HTML readable in source.
 // strings.ReplaceAll is sufficient.
-func renderIndex(html, previewURL, previewFrameURL, terminalURL string) string {
+func renderIndex(html, previewURL, previewFrameURL string, terminalTabs []TerminalTab) string {
 	htmlEsc := strings.NewReplacer(`"`, "&quot;", `<`, "&lt;", `>`, "&gt;", `&`, "&amp;")
 
-	// LEFT_PANE: terminal iframe when configured, chat composer + thread otherwise.
+	// LEFT_PANE: chat composer/thread when no tabs, single iframe when 1 tab
+	// (back-compat with v0.12.0 single-Claude visual layout), tab strip +
+	// N iframes when ≥2 tabs (ARD-0035 §1). The chat.js bindings switch the
+	// active iframe by toggling the .active class; only the active one has
+	// display != none. localStorage persists the active-tab choice per slug.
 	var leftPane string
-	if terminalURL != "" {
-		safeTerm := htmlEsc.Replace(terminalURL)
-		leftPane = `<iframe id="terminal-iframe" src="` + safeTerm +
-			`" title="terminal" allow="clipboard-read; clipboard-write"></iframe>`
-	} else {
+	switch {
+	case len(terminalTabs) == 0:
 		leftPane = `<div class="thread" id="thread"></div>` +
 			`<form class="composer" id="composer" autocomplete="off">` +
 			`<input id="input" type="text" placeholder="Ask the AI to change something..." autocomplete="off" />` +
 			`<button type="submit" class="btn primary">Send</button>` +
 			`</form>`
+	case len(terminalTabs) == 1:
+		// Single tab: render an iframe without a tab strip. Preserves the
+		// v0.12.0 visual layout for single-Claude profiles.
+		safeTerm := htmlEsc.Replace(terminalTabs[0].URL)
+		leftPane = `<iframe id="terminal-iframe" src="` + safeTerm +
+			`" title="terminal" allow="clipboard-read; clipboard-write"></iframe>`
+	default:
+		// Multi-tab (ARD-0035): tab strip + N iframes. Default-active is the
+		// first declared agent; chat.js applies any persisted choice from
+		// localStorage on load.
+		var tabsHTML strings.Builder
+		var framesHTML strings.Builder
+		tabsHTML.WriteString(`<div class="tab-strip" id="agent-tab-strip" role="tablist">`)
+		for i, tab := range terminalTabs {
+			safeName := htmlEsc.Replace(tab.Name)
+			safeURL := htmlEsc.Replace(tab.URL)
+			activeAttr := ""
+			displayStyle := `style="display:none"`
+			if i == 0 {
+				activeAttr = ` aria-selected="true"`
+				displayStyle = ""
+			}
+			activeClass := ""
+			if i == 0 {
+				activeClass = " active"
+			}
+			tabsHTML.WriteString(`<button type="button" class="tab` + activeClass +
+				`" role="tab" data-agent="` + safeName + `"` + activeAttr + `>` +
+				safeName + `</button>`)
+			framesHTML.WriteString(`<iframe class="terminal-iframe-tab" id="terminal-iframe-` + safeName +
+				`" data-agent="` + safeName + `" src="` + safeURL +
+				`" title="terminal: ` + safeName + `" allow="clipboard-read; clipboard-write" ` +
+				displayStyle + `></iframe>`)
+		}
+		tabsHTML.WriteString(`</div>`)
+		leftPane = tabsHTML.String() + framesHTML.String()
 	}
 	html = strings.ReplaceAll(html, "{{LEFT_PANE}}", leftPane)
 
@@ -406,16 +469,37 @@ func (s *Server) runSave(req saveReq) {
 		return
 	}
 
+	// Pre-flight: gh auth (the saver shells out to `gh pr create` and dies
+	// with an `[ERROR] saver_save: 'gh' not authenticated...` message buried
+	// inside a "boring failed: exit status 1\n..." wrapper). Detect it here
+	// instead and emit a clean, actionable save_failed before any work begins.
+	// Recoverable=true lets the UI render this as a fix-and-retry case rather
+	// than a hard error.
+	if ok, reason := ghAuthOK(); !ok {
+		s.emitSaveFailed(reason, true)
+		return
+	}
+
+	// Map the save-dialog request fields to the actual `boring save` CLI
+	// flag surface (boring:cmd_save + lib/saver.sh:saver_save). The CLI
+	// takes --message (title) + --description (PR body) + --draft|--ready
+	// + zero-or-more --reviewer. The target dir is implicit via cmd.Dir
+	// (cmd_save defaults to "."). Earlier versions of this dispatcher used
+	// --title and --profile, which the CLI rejects with "unknown flag".
 	args := append([]string(nil), s.SaveCmd[1:]...)
-	args = append(args, "--profile", s.Slug)
 	if req.Title != "" {
-		args = append(args, "--title", req.Title)
+		args = append(args, "--message", req.Title)
 	}
 	if req.Description != "" {
 		args = append(args, "--description", req.Description)
 	}
 	if req.Draft {
 		args = append(args, "--draft")
+	} else {
+		// Explicit --ready when the marketer unchecks "Open as draft" —
+		// otherwise saver_save falls back to the profile's save.draft_by_default
+		// (which defaults true), surprising the marketer who explicitly opted out.
+		args = append(args, "--ready")
 	}
 	for _, rv := range req.Reviewers {
 		args = append(args, "--reviewer", rv)
@@ -437,6 +521,28 @@ func (s *Server) runSave(req saveReq) {
 		branch = "marketer/" + s.Slug + "-" + time.Now().UTC().Format("20060102-150405")
 	}
 	s.emitSaveSucceeded(prURL, branch)
+}
+
+// ghAuthOK pre-flights `gh auth status` before runSave shells out to
+// `boring save`. Returns (false, marketer-friendly-message) when gh isn't
+// installed OR isn't authenticated; (true, "") otherwise. Avoids the noisy
+// "boring failed: exit status 1\n[ERROR] saver_save: 'gh' not authenticated..."
+// wrapper the marketer would otherwise see in the toast.
+//
+// One-second timeout: `gh auth status` is a local check, no network round-trip
+// expected. If it stalls past a second something is wrong with the install
+// itself — surface that as the actionable error rather than hanging the save.
+var ghAuthOK = func() (bool, string) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return false, "GitHub CLI (`gh`) is not installed on this machine. Install it from https://cli.github.com and then run `gh auth login` before saving."
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "auth", "status")
+	if err := cmd.Run(); err != nil {
+		return false, "GitHub auth required. Open a terminal and run `gh auth login` (or `gh auth refresh` if the token expired), then click Save again."
+	}
+	return true, ""
 }
 
 // fakeSaveSucceeded emits a synthetic save_succeeded event with a placeholder
@@ -494,24 +600,105 @@ func parseSaveOutput(out string) (prURL, branch string) {
 	return prURL, branch
 }
 
-// handleSavePreview returns the AI-summarized title the save dialog should
-// pre-fill. v0: deterministic summary; real call to OpenCode for an AI
-// title comes later.
+// handleSavePreview returns the title + markdown-formatted description the
+// save dialog pre-fills. Description leads with the marketer's prompts
+// ("What I asked") then the files Claude touched ("Files changed"), so the
+// engineer reviewer reading the PR sees the marketer's intent up front — the
+// gap called out in the code review of the ARD-0035 work. v0: title is
+// title-shaped from the last user prompt; description is rendered from the
+// thread events (no AI summarization yet).
 func (s *Server) handleSavePreview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowedJSON(w, "GET")
 		return
 	}
-	title, err := s.Thread.SummarizeSinceLastSave()
+	ctx, err := s.Thread.ComputeSaveContext()
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"title":       title,
-		"description": "Generated from boring-ui chat thread.",
+		"title":       ctx.Title,
+		"description": formatSaveDescription(ctx),
 	})
+}
+
+// formatSaveDescription renders a SaveContext as the markdown body of the
+// PR / save dialog. Lead with prompts (the marketer's intent), then the
+// file list (what Claude actually touched). Multiline prompts are kept
+// readable by indenting continuation lines under the bullet. Returns a
+// constant fallback when the context has nothing useful — keeps the dialog
+// from rendering an empty textarea.
+func formatSaveDescription(ctx SaveContext) string {
+	var b strings.Builder
+	if len(ctx.Prompts) > 0 {
+		b.WriteString("## What I asked\n\n")
+		for _, p := range ctx.Prompts {
+			lines := strings.Split(p, "\n")
+			b.WriteString("- ")
+			b.WriteString(lines[0])
+			b.WriteString("\n")
+			for _, ln := range lines[1:] {
+				if strings.TrimSpace(ln) == "" {
+					continue
+				}
+				b.WriteString("  ")
+				b.WriteString(ln)
+				b.WriteString("\n")
+			}
+		}
+		b.WriteString("\n")
+	}
+	if len(ctx.Files) > 0 {
+		fmt.Fprintf(&b, "## Files changed (%d)\n\n", len(ctx.Files))
+		for _, f := range ctx.Files {
+			b.WriteString("- `")
+			b.WriteString(f)
+			b.WriteString("`\n")
+		}
+		b.WriteString("\n")
+	}
+	if b.Len() == 0 {
+		return "Generated from boring-ui chat thread."
+	}
+	// Agent attribution (ARD-0035): when at least one tool call carried an
+	// Agent field, surface which harness(es) the marketer actually used in
+	// this session. Falls through to the plain "Generated from..." footer
+	// for legacy threads (no Agent set on tool calls) so back-compat holds.
+	if len(ctx.AgentsSeen) > 0 {
+		fmt.Fprintf(&b, "_Generated via %s (boring-ui session, ARD-0035)._",
+			formatAgentList(ctx.AgentsSeen))
+	} else {
+		b.WriteString("_Generated from a boring-ui session (ARD-0022)._")
+	}
+	return b.String()
+}
+
+// formatAgentList pretty-prints a sorted list of agent names for the
+// description footer. "claude" → "Claude"; "codex" → "Codex". Two-agent
+// case joins with " + " (e.g., "Claude + Codex"); three-or-more uses
+// comma-separated with " + " before the last (just in case Phase 4+
+// adds a third).
+func formatAgentList(agents []string) string {
+	titled := make([]string, len(agents))
+	for i, a := range agents {
+		if a == "" {
+			titled[i] = a
+			continue
+		}
+		titled[i] = strings.ToUpper(a[:1]) + a[1:]
+	}
+	switch len(titled) {
+	case 0:
+		return ""
+	case 1:
+		return titled[0]
+	case 2:
+		return titled[0] + " + " + titled[1]
+	default:
+		return strings.Join(titled[:len(titled)-1], ", ") + " + " + titled[len(titled)-1]
+	}
 }
 
 // --- Undo stub --------------------------------------------------------------

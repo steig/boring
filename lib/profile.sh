@@ -657,6 +657,73 @@ _profile_validate_json() {
         [[ -z "$ui_preview" ]] && { log_error "$source: ui.preview_url must be non-empty"; _bump; }
       fi
     fi
+
+    # ARD-0035: ui.agents — optional list of agent tabs for boring-ui's left
+    # pane. Absent → default [{name: "claude", harness: "claude"}] (v0.12.0
+    # behavior preserved). When present, must be a non-empty array of
+    # {name, harness} objects. The two-harness ceiling from ARD-0035 §6 is
+    # enforced at the schema layer: harness ∈ {claude, codex}. Adding a third
+    # would put us back inside ARD-0020 §1's rejection of per-CLI adapters
+    # for three CLIs — the rejection is the load-bearing part of ARD-0035.
+    local ui_agents_type
+    ui_agents_type="$(jq -r '.ui | if has("agents") then (.agents | type) else "absent" end' <<<"$json")"
+    if [[ "$ui_agents_type" != "absent" ]]; then
+      if [[ "$ui_agents_type" != "array" ]]; then
+        log_error "$source: ui.agents must be a list (got: $ui_agents_type)"; _bump
+      else
+        local ui_agents_count
+        ui_agents_count="$(jq -r '.ui.agents | length' <<<"$json")"
+        if [[ "$ui_agents_count" -eq 0 ]]; then
+          # Empty list is almost certainly a mistake — the omit path is the
+          # "disable" signal. Failing fast surfaces the typo immediately.
+          log_error "$source: ui.agents must declare at least one agent (omit the field entirely for the default single-Claude setup)"; _bump
+        else
+          # Per-entry shape: object with required name (slug-shape) + harness
+          # (claude | codex). Mirrors the services: validator at lines
+          # 269-283. Names also have to be unique across the list — see the
+          # group_by check below — because lib/web_ui.sh allocates ttyd
+          # ports by hashing "$slug:$agent_name"; duplicate names collide.
+          local agent_bad
+          agent_bad="$(jq -r '
+            .ui.agents // []
+            | to_entries | map(
+                . as $entry
+                | .value as $a
+                | if ($a | type) != "object"
+                    then "ui.agents[\($entry.key)]: not an object"
+                  elif ($a.name // "") == ""
+                    then "ui.agents[\($entry.key)]: missing required field: name"
+                  elif (($a.name | type) != "string") or (($a.name | test("^[a-z0-9-]+$")) | not)
+                    then "ui.agents[\($entry.key)].name: must be slug-shaped [a-z0-9-]+ (got: \"\($a.name)\")"
+                  elif ($a.harness // "") == ""
+                    then "ui.agents.\($a.name): missing required field: harness"
+                  elif (($a.harness | type) != "string") or (($a.harness == "claude" or $a.harness == "codex") | not)
+                    then "ui.agents.\($a.name).harness: must be one of [claude, codex] (got: \"\($a.harness)\"; per ARD-0035 §6 the two-harness ceiling rejects others at the schema layer)"
+                  else empty
+                  end
+              ) | .[]' <<<"$json")"
+          if [[ -n "$agent_bad" ]]; then
+            while IFS= read -r m; do
+              log_error "$source: $m"; _bump
+            done <<<"$agent_bad"
+          fi
+
+          # Names must be unique across the list.
+          local dup_names
+          dup_names="$(jq -r '
+            .ui.agents // []
+            | map(.name | select(. != null and . != ""))
+            | group_by(.)
+            | map(select(length > 1) | .[0])
+            | .[]' <<<"$json")"
+          if [[ -n "$dup_names" ]]; then
+            while IFS= read -r n; do
+              log_error "$source: ui.agents: duplicate agent name '$n' (names must be unique — they are the per-agent ttyd port suffix)"; _bump
+            done <<<"$dup_names"
+          fi
+        fi
+      fi
+    fi
   fi
 
   # ARD-0026: guardrails.allowed_tools: must be a list of canonical-name strings.
@@ -881,9 +948,16 @@ _profile_normalize() {
         # v0.8.0: ui block normalized with defaults. ui.preview_url wins over
         # top-level preview_url for the UI iframe (consumer chooses; we just
         # surface both shapes so cmd_open can pick).
+        # v0.13.0 (ARD-0035): ui.agents defaulted to a single Claude tab when
+        # absent, so downstream code in web_ui.sh + boring-ui-backend can
+        # iterate uniformly without special-casing the v0.12.0 single-agent
+        # shape. Single-entry lists are still valid and render no tab strip
+        # in the UI (web_ui.sh and the frontend treat len==1 as the legacy
+        # single-pane case).
         ui: {
           enabled: ($p.ui.enabled // false),
-          preview_url: ($p.ui.preview_url // null)
+          preview_url: ($p.ui.preview_url // null),
+          agents: ($p.ui.agents // [{name: "claude", harness: "claude"}])
         },
         # v0.9.0 (ARD-0030): dev block normalized into {command, workdir, port}.
         # command is always a string downstream (a list is joined with spaces).

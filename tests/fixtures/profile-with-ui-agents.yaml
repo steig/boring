@@ -1,0 +1,15 @@
+# Fixture for ARD-0035 ui.agents: schema. Two-agent left pane (Claude + Codex).
+# Consumed by tests/smoke-boring-ui-schema.sh Test 6.
+profile_version: "1"
+name: ui-agents-fixture
+preset: shopify
+services: []
+
+ui:
+  enabled: true
+  preview_url: http://127.0.0.1:9292/
+  agents:
+    - name: claude
+      harness: claude
+    - name: codex
+      harness: codex

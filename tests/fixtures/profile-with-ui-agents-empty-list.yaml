@@ -1,0 +1,10 @@
+# Fixture: empty ui.agents list — should fail validation per ARD-0035 §4
+# ("declare at least one agent or omit the field entirely").
+profile_version: "1"
+name: ui-agents-empty-fixture
+preset: shopify
+services: []
+
+ui:
+  enabled: true
+  agents: []

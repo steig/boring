@@ -52,6 +52,88 @@ func parseAllowedPaths(commaSep string) []string {
 	return out
 }
 
+// parseTerminalURLs parses the --terminal-urls flag value into a []TerminalTab
+// (ARD-0035 §1). Format: comma-separated "<name>=<url>" pairs; whitespace
+// around either side of the "=" is trimmed; empty entries are dropped.
+//
+// Back-compat: when the plural flag is empty and a legacy --terminal-url
+// (singular) is provided, returns a one-element list named "default". This
+// preserves the v0.12.0 single-iframe behavior without forcing the caller
+// to construct the name= prefix.
+//
+// Validation: each entry must split into exactly two non-empty parts on the
+// first "=". Names must be slug-shape ([a-z0-9-]+, same constraint that
+// lib/profile.sh enforces on profile.ui.agents[].name; the slug-suffix is
+// also load-bearing for lib/web_ui.sh port allocation). Names must be unique.
+// Returns nil tabs for empty input — callers treat that as "SSE chat UI in
+// the left pane."
+func parseTerminalURLs(plural, singular string) ([]TerminalTab, error) {
+	plural = strings.TrimSpace(plural)
+	singular = strings.TrimSpace(singular)
+
+	if plural == "" && singular == "" {
+		return nil, nil
+	}
+	if plural == "" {
+		// Back-compat: --terminal-url alone -> single tab named "default".
+		// The "default" name is intentionally generic — a single-tab UI
+		// renders no tab strip (no name visible to the user); this is
+		// purely the data shape downstream code expects.
+		return []TerminalTab{{Name: "default", URL: singular}}, nil
+	}
+
+	parts := strings.Split(plural, ",")
+	tabs := make([]TerminalTab, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
+	for i, raw := range parts {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		eq := strings.IndexByte(raw, '=')
+		if eq <= 0 || eq == len(raw)-1 {
+			return nil, fmt.Errorf("--terminal-urls entry %d (%q): expected <name>=<url> (non-empty on both sides)", i, raw)
+		}
+		name := strings.TrimSpace(raw[:eq])
+		url := strings.TrimSpace(raw[eq+1:])
+		if name == "" || url == "" {
+			return nil, fmt.Errorf("--terminal-urls entry %d (%q): both <name> and <url> must be non-empty", i, raw)
+		}
+		if !isSlugShape(name) {
+			return nil, fmt.Errorf("--terminal-urls entry %d: name %q must be slug-shape [a-z0-9-]+ (matches lib/profile.sh ui.agents[].name)", i, name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("--terminal-urls: duplicate tab name %q (names are the per-agent ttyd port suffix; duplicates would collide)", name)
+		}
+		seen[name] = true
+		tabs = append(tabs, TerminalTab{Name: name, URL: url})
+	}
+	if len(tabs) == 0 {
+		return nil, fmt.Errorf("--terminal-urls: parsed zero tabs from %q (use --terminal-urls a=u,b=u; or leave empty for the chat UI)", plural)
+	}
+	return tabs, nil
+}
+
+// isSlugShape mirrors the regex /^[a-z0-9-]+$/ used by lib/profile.sh's
+// ui.agents[].name validator (ARD-0035 §4). The Go regexp package is not
+// imported anywhere else in the backend yet; this hand-rolled check avoids
+// pulling it in just for one tiny call.
+func isSlugShape(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // pathAllowed reports whether repoRelPath matches ANY glob in the allowlist.
 // repoRelPath is expected to be a clean, workdir-relative path (forward
 // slashes, no leading slash, no "..", no "./"). Any other shape is rejected

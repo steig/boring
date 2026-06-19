@@ -789,3 +789,73 @@
     attachSSE();
   })();
 })();
+
+// ============================================================================
+// ARD-0035 — multi-agent tab strip wiring
+// ============================================================================
+// Rendered by server.go renderIndex when --terminal-urls has ≥2 entries.
+// Each .tab data-agent="<name>" maps 1:1 to a .terminal-iframe-tab with the
+// same data-agent. Clicking a tab swaps visibility; the choice persists in
+// localStorage per slug (location.pathname) so refresh + revisit stays sticky.
+//
+// No-op when the strip is absent (single-agent or chat UI mode), so this
+// block is safe to include unconditionally.
+(function () {
+  const tabStrip = document.getElementById('agent-tab-strip');
+  if (!tabStrip) return;
+
+  const tabs = Array.from(tabStrip.querySelectorAll('.tab'));
+  const iframes = Array.from(document.querySelectorAll('.terminal-iframe-tab'));
+  if (tabs.length < 2 || iframes.length === 0) return;
+
+  // Per-slug key — same pattern as the pane-ratio persistence from
+  // ARD-0033's preview work (localStorage keyed on location.pathname).
+  const storageKey = 'boring-ui:active-agent:' + location.pathname;
+
+  function setActive(agent) {
+    let matched = false;
+    tabs.forEach((t) => {
+      const isActive = t.dataset.agent === agent;
+      t.classList.toggle('active', isActive);
+      t.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      if (isActive) matched = true;
+    });
+    if (!matched) return; // unknown agent name, leave state alone
+    iframes.forEach((f) => {
+      // Inline style keeps render-time markup self-contained (server.go
+      // emits the initial display:none on non-first iframes). On switch
+      // we clear the inline style for the chosen iframe so it shows.
+      if (f.dataset.agent === agent) {
+        f.style.display = '';
+      } else {
+        f.style.display = 'none';
+      }
+    });
+    try {
+      localStorage.setItem(storageKey, agent);
+    } catch (e) {
+      // localStorage can throw in private mode / quota — non-fatal.
+    }
+  }
+
+  // Apply persisted choice on load. Falls back to whichever tab the server
+  // rendered as initially active (first declared) if the stored agent no
+  // longer exists in the current profile.
+  let initial = null;
+  try {
+    initial = localStorage.getItem(storageKey);
+  } catch (e) {
+    initial = null;
+  }
+  const valid = tabs.some((t) => t.dataset.agent === initial);
+  if (!valid) {
+    const active = tabs.find((t) => t.classList.contains('active'));
+    initial = active ? active.dataset.agent : tabs[0].dataset.agent;
+  }
+  setActive(initial);
+
+  // Click → swap. Keyboard: native button focus + Enter/Space already work.
+  tabs.forEach((t) => {
+    t.addEventListener('click', () => setActive(t.dataset.agent));
+  });
+})();

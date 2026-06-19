@@ -504,8 +504,9 @@ func parseClaudeStream(r io.Reader, emit func(Envelope)) error {
 						inputRaw = string(b)
 					}
 					emitEnv(EventToolCall, ToolCallData{
-						Tool: acc.toolName,
-						Args: json.RawMessage(inputRaw),
+						Tool:  acc.toolName,
+						Args:  json.RawMessage(inputRaw),
+						Agent: "claude", // ARD-0035: attribution for the SaveContext renderer.
 					})
 				}
 				// Text blocks: defer to the `assistant` line which carries

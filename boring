@@ -373,8 +373,30 @@ _cmd_open_maybe_start_ui() {
   # naming. compose_generate pins --project-name to $profile_name, so:
   local container_name="${profile_name}-dev-1"
 
-  # Confirm claude is in the container + seed empty MCP config.
-  web_ui_ensure_container_claude "$container_name"
+  # Per ARD-0035: read the list of agent tabs (validated + defaulted by
+  # lib/profile.sh — always a non-empty array of {name, harness} objects;
+  # absent profile fields default to a single Claude tab so v0.12.0 single-
+  # Claude profiles behave unchanged). For each declared agent run the
+  # per-harness container precondition (claude/codex have their own
+  # ensure_container_* functions).
+  local _agents_json
+  _agents_json="$(jq -c '.ui.agents' <<<"$profile_json")"
+  local _agent_json _agent_name _agent_harness
+  while IFS= read -r _agent_json; do
+    _agent_name="$(jq -r '.name' <<<"$_agent_json")"
+    _agent_harness="$(jq -r '.harness' <<<"$_agent_json")"
+    case "$_agent_harness" in
+      claude)
+        web_ui_ensure_container_claude "$container_name"
+        ;;
+      codex)
+        web_ui_ensure_container_codex "$container_name"
+        ;;
+      *)
+        die "cmd_open: unsupported harness '$_agent_harness' for agent '$_agent_name' (schema layer rejects this per ARD-0035 §6 — should never reach here)"
+        ;;
+    esac
+  done < <(jq -c '.[]' <<<"$_agents_json")
 
   # Resolve preview URL with fallback chain per ARD-0022 §6:
   #   1. profile.ui.preview_url (boring-ui-specific override)
@@ -395,12 +417,27 @@ _cmd_open_maybe_start_ui() {
 
   # Slug = profile name (already validated as [a-z0-9-]+ by profile_validate).
   local slug="$profile_name"
-  local ttyd_port
-  ttyd_port="$(web_ui_ttyd_port "$slug")"
 
-  # Per-project ttyd + backend.
-  web_ui_ttyd_start "$slug" "$container_name" "$ttyd_port"
-  web_ui_backend_start "$SCRIPT_DIR" "$slug" "$repo" "$ttyd_port" "$preview_url" "$container_name"
+  # Per ARD-0035: start one ttyd per declared agent and build the
+  # --terminal-urls comma-list (<name>=<url>,<name>=<url>) that the backend
+  # consumes to render the tab strip. Single-agent profiles produce a
+  # single-entry list — the backend's renderIndex emits a plain iframe with
+  # no tab strip, preserving the v0.12.0 visual layout.
+  local _terminal_urls=""
+  while IFS= read -r _agent_json; do
+    _agent_name="$(jq -r '.name' <<<"$_agent_json")"
+    local _agent_port _agent_url
+    _agent_port="$(web_ui_ttyd_port "$slug" "$_agent_name")"
+    web_ui_ttyd_start "$slug" "$container_name" "$_agent_port" "$_agent_name"
+    _agent_url="http://127.0.0.1:$_agent_port/"
+    if [[ -z "$_terminal_urls" ]]; then
+      _terminal_urls="${_agent_name}=${_agent_url}"
+    else
+      _terminal_urls="${_terminal_urls},${_agent_name}=${_agent_url}"
+    fi
+  done < <(jq -c '.[]' <<<"$_agents_json")
+
+  web_ui_backend_start "$SCRIPT_DIR" "$slug" "$repo" "$_terminal_urls" "$preview_url" "$container_name"
 
   # Register with the proxy so it can route /<slug>/.
   local socket
@@ -990,7 +1027,15 @@ cmd_save() {
     case "$1" in
       -h|--help)
         _cmd_save_print_help; return 0 ;;
-      --message|--target)
+      # --message: PR title override (otherwise saver_summarize_turn picks one).
+      # --description: PR body override (otherwise saver_summarize_pr generates one
+      #   from git diff). Used by boring-ui's save dialog to carry the
+      #   ComputeSaveContext-rendered markdown ("What I asked" + "Files changed")
+      #   end-to-end into the GitHub PR body.
+      # --target: which directory to save (defaults to "." below).
+      # --reviewer: repeatable; each adds one GitHub reviewer beyond the
+      #   profile's save.reviewers / save.reviewers_from default.
+      --message|--description|--target|--reviewer)
         [[ $# -ge 2 ]] || die "boring save: $1 requires a value"
         saver_flags+=("$1" "$2"); shift 2 ;;
       --draft|--ready)

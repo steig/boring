@@ -306,9 +306,99 @@ case "$argv" in
 esac
 
 # Clean up the stub ttyd PID so the trap doesn't trip into anything funny.
-pidfile="$(web_ui_ui_dir "$slug")/ttyd.pid"
+# Per ARD-0035 the pid file is named ttyd-<agent>.pid; the default agent
+# (when the 4th arg is omitted) is "claude".
+pidfile="$(web_ui_ui_dir "$slug")/ttyd-claude.pid"
 if [[ -f "$pidfile" ]]; then
   kill "$(cat "$pidfile")" 2>/dev/null || true
+fi
+
+# ============================================================================
+# Test 8: ARD-0035 multi-agent — codex argv + per-agent port + pidfile naming
+# ============================================================================
+step "Test 8: web_ui_ttyd_start with agent=codex (ARD-0035)"
+
+# Reuse the argv-capture stubs from Test 7. Reset the log so we read only
+# the codex invocation.
+: > "$ARGV_LOG"
+
+slug2="argv-codex-slug"
+container_name2="argv-codex-dev-1"
+port_claude="$(web_ui_ttyd_port "$slug2" "claude")"
+port_codex="$(web_ui_ttyd_port "$slug2" "codex")"
+
+# 8a. The two ports differ — the hash domain for agent=codex includes the
+# agent suffix so it won't collide with the claude port.
+if [[ "$port_claude" != "$port_codex" ]]; then
+  pass "web_ui_ttyd_port allocates distinct ports per agent (claude=$port_claude, codex=$port_codex)"
+else
+  fail "claude and codex ttyd ports collided ($port_claude == $port_codex)"
+fi
+
+# 8b. agent=claude with no 2nd arg matches v0.12.0 single-Claude port.
+port_default="$(web_ui_ttyd_port "$slug2")"
+if [[ "$port_default" == "$port_claude" ]]; then
+  pass "web_ui_ttyd_port(slug, claude) == web_ui_ttyd_port(slug) (back-compat)"
+else
+  fail "back-compat broken: default=$port_default, claude=$port_claude"
+fi
+
+# 8c. Start ttyd with agent=codex — argv must be `docker exec -it <c> codex`
+# with NO claude flags (no --strict-mcp-config, no allowed-tools).
+if PATH="$TMPROOT/argv-bin:$PATH" web_ui_ttyd_start "$slug2" "$container_name2" "$port_codex" "codex" >"$TMPROOT/ttyd-codex-start.out" 2>&1; then
+  pass "web_ui_ttyd_start with agent=codex returned 0"
+else
+  fail "web_ui_ttyd_start with agent=codex failed: $(cat "$TMPROOT/ttyd-codex-start.out")"
+fi
+
+if [[ -f "$ARGV_LOG" ]]; then
+  codex_argv="$(cat "$ARGV_LOG")"
+  pass "codex ttyd argv captured: $codex_argv"
+else
+  fail "codex ttyd stub did not write argv log"
+  codex_argv=""
+fi
+
+case "$codex_argv" in
+  *"-p $port_codex"*) pass "codex argv has -p $port_codex" ;;
+  *)                  fail "codex argv missing -p $port_codex" ;;
+esac
+case "$codex_argv" in
+  *"docker exec -it $container_name2 codex"*) pass "codex argv runs 'docker exec -it $container_name2 codex'" ;;
+  *)                                          fail "codex argv missing 'docker exec -it $container_name2 codex'; got: $codex_argv" ;;
+esac
+# Codex argv must NOT include Claude flags — would mean the case-switch fell through.
+case "$codex_argv" in
+  *"--strict-mcp-config"*) fail "codex argv leaked --strict-mcp-config (Claude flag)" ;;
+  *)                       pass "codex argv excludes --strict-mcp-config" ;;
+esac
+case "$codex_argv" in
+  *"Bash Edit Read Write"*) fail "codex argv leaked Claude --allowed-tools" ;;
+  *)                        pass "codex argv excludes Claude --allowed-tools" ;;
+esac
+
+# 8d. Pidfile naming: ttyd-codex.pid (NOT ttyd.pid or ttyd-claude.pid).
+codex_pidfile="$(web_ui_ui_dir "$slug2")/ttyd-codex.pid"
+if [[ -f "$codex_pidfile" ]]; then
+  pass "ttyd pidfile written to ttyd-codex.pid"
+else
+  fail "ttyd pidfile NOT at ttyd-codex.pid (expected: $codex_pidfile)"
+fi
+
+# 8e. Unsupported harness — should die.
+if ( PATH="$TMPROOT/argv-bin:$PATH" web_ui_ttyd_start "bad-agent-slug" "container-x" 9999 "gemini" >/dev/null 2>"$TMPROOT/bad-harness.err" ); then
+  fail "web_ui_ttyd_start accepted agent=gemini (expected die per ARD-0035 §6)"
+else
+  if grep -q "unsupported agent 'gemini'" "$TMPROOT/bad-harness.err"; then
+    pass "agent=gemini rejected with two-harness-ceiling message"
+  else
+    fail "bad-harness rejection has unexpected message: $(cat "$TMPROOT/bad-harness.err")"
+  fi
+fi
+
+# Clean up the codex stub ttyd.
+if [[ -f "$codex_pidfile" ]]; then
+  kill "$(cat "$codex_pidfile")" 2>/dev/null || true
 fi
 
 # ============================================================================

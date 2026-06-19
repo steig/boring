@@ -243,6 +243,83 @@ else
 fi
 
 # ============================================================================
+# Test 6: ARD-0035 ui.agents — happy path, defaults, and the four error shapes.
+# ============================================================================
+step "Test 6: ui.agents schema (ARD-0035)"
+
+# 6a. Happy path: two agents declared, both valid.
+repo_agents="$(mk_repo "agents" "$FIXTURES_DIR/profile-with-ui-agents.yaml")"
+if json_agents="$(profile_load "$repo_agents" 2>"$TMPROOT/agents.err")"; then
+  pass "profile_load accepted two-agent fixture"
+else
+  fail "profile_load rejected two-agent fixture: $(cat "$TMPROOT/agents.err")"
+  exit 1
+fi
+
+actual="$(jq -r '.ui.agents | length' <<<"$json_agents")"
+[[ "$actual" == "2" ]] \
+  && pass "ui.agents preserved as 2-element list" \
+  || fail "ui.agents length got: $actual"
+
+actual="$(jq -r '.ui.agents[0].name + ":" + .ui.agents[0].harness' <<<"$json_agents")"
+[[ "$actual" == "claude:claude" ]] \
+  && pass "ui.agents[0] = claude:claude" \
+  || fail "ui.agents[0] got: $actual"
+
+actual="$(jq -r '.ui.agents[1].name + ":" + .ui.agents[1].harness' <<<"$json_agents")"
+[[ "$actual" == "codex:codex" ]] \
+  && pass "ui.agents[1] = codex:codex" \
+  || fail "ui.agents[1] got: $actual"
+
+# 6b. Default when absent: the existing boring-ui fixture (no ui.agents)
+#     must normalize to a single Claude tab. Reuses $json from Test 1.
+actual="$(jq -r '.ui.agents | length' <<<"$json")"
+[[ "$actual" == "1" ]] \
+  && pass "ui.agents defaults to length-1 list when absent" \
+  || fail "ui.agents default length got: $actual"
+
+actual="$(jq -r '.ui.agents[0].name + ":" + .ui.agents[0].harness' <<<"$json")"
+[[ "$actual" == "claude:claude" ]] \
+  && pass "ui.agents default = [{name: claude, harness: claude}]" \
+  || fail "ui.agents default got: $actual"
+
+# 6c. Empty list — must fail.
+repo_empty="$(mk_repo "agents-empty" "$FIXTURES_DIR/profile-with-ui-agents-empty-list.yaml")"
+if ( profile_load "$repo_empty" >/dev/null 2>"$TMPROOT/agents-empty.err" ); then
+  fail "profile_load accepted empty ui.agents list (expected rejection)"
+else
+  if grep -q "ui.agents must declare at least one agent" "$TMPROOT/agents-empty.err"; then
+    pass "empty ui.agents list rejected with actionable error"
+  else
+    fail "empty-list rejection has unexpected message: $(cat "$TMPROOT/agents-empty.err")"
+  fi
+fi
+
+# 6d. Duplicate agent names — must fail.
+repo_dup="$(mk_repo "agents-dup" "$FIXTURES_DIR/profile-with-ui-agents-duplicate-name.yaml")"
+if ( profile_load "$repo_dup" >/dev/null 2>"$TMPROOT/agents-dup.err" ); then
+  fail "profile_load accepted duplicate agent name (expected rejection)"
+else
+  if grep -q "duplicate agent name 'claude'" "$TMPROOT/agents-dup.err"; then
+    pass "duplicate agent name rejected"
+  else
+    fail "duplicate-name rejection has unexpected message: $(cat "$TMPROOT/agents-dup.err")"
+  fi
+fi
+
+# 6e. Unsupported harness (gemini) — must fail per the ARD-0035 §6 ceiling.
+repo_bad_harness="$(mk_repo "agents-bad-harness" "$FIXTURES_DIR/profile-with-ui-agents-bad-harness.yaml")"
+if ( profile_load "$repo_bad_harness" >/dev/null 2>"$TMPROOT/agents-bad-harness.err" ); then
+  fail "profile_load accepted harness=gemini (expected rejection per ARD-0035 §6)"
+else
+  if grep -q "must be one of \[claude, codex\]" "$TMPROOT/agents-bad-harness.err"; then
+    pass "unsupported harness (gemini) rejected with two-harness-ceiling hint"
+  else
+    fail "bad-harness rejection has unexpected message: $(cat "$TMPROOT/agents-bad-harness.err")"
+  fi
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo

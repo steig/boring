@@ -24,6 +24,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -128,11 +129,125 @@ func (t *Thread) ReadAll() ([]Envelope, error) {
 	return out, nil
 }
 
+// SaveContext is the rich pre-fill payload for the save dialog. It's what
+// ComputeSaveContext returns and what handleSavePreview formats into the PR
+// title + description. Beyond a title-shaped string, it carries every user
+// prompt since the last save and the unique files Claude touched, so the
+// PR body can lead with what the marketer actually asked for — not just a
+// diff the engineer reviewer has to interpret cold (the gap called out in
+// the code review of the ARD-0035 work).
+type SaveContext struct {
+	Title       string   // last user prompt, trimmed to 80 chars; "No new changes to save" when empty
+	Prompts     []string // every user prompt in order, since the last save_succeeded
+	Files       []string // unique file paths from Edit/Write/MultiEdit/Read tool calls (best-effort: scans ToolCall args for file_path/path keys)
+	AgentsSeen  []string // unique agent names ("claude", "codex") that emitted at least one tool call since the last save (ARD-0035); empty for legacy threads written before v0.13.0
+}
+
+// ComputeSaveContext walks the thread since the last save_succeeded and
+// extracts (a) every user prompt and (b) the file paths Claude touched.
+// v0: file extraction is a best-effort scan of ToolCall args for "file_path"
+// / "path" keys (matches Claude's Edit/Write/MultiEdit/Read tool schemas;
+// any future tool that uses a different key shape will silently be missed
+// from the files list — falls back to "no files" gracefully).
+func (t *Thread) ComputeSaveContext() (SaveContext, error) {
+	ctx := SaveContext{}
+	all, err := t.ReadAll()
+	if err != nil {
+		return ctx, err
+	}
+
+	// Same "since last save" anchor SummarizeSinceLastSave uses, so the two
+	// helpers stay consistent.
+	startIdx := 0
+	for i := len(all) - 1; i >= 0; i-- {
+		if all[i].Type == EventSaveSucceeded {
+			startIdx = i + 1
+			break
+		}
+	}
+	events := all[startIdx:]
+	if len(events) == 0 {
+		ctx.Title = "No new changes to save"
+		return ctx, nil
+	}
+
+	seenFiles := map[string]bool{}
+	seenAgents := map[string]bool{}
+	for _, e := range events {
+		switch e.Type {
+		case EventUserMessage:
+			var d UserMessageData
+			if err := json.Unmarshal(e.Data, &d); err == nil {
+				if text := strings.TrimSpace(d.Text); text != "" {
+					ctx.Prompts = append(ctx.Prompts, text)
+					// Title := most recent prompt (matches the prior
+					// SummarizeSinceLastSave behavior — "what they asked most
+					// recently" is a reasonable PR-title shape).
+					ctx.Title = text
+				}
+			}
+		case EventToolCall:
+			var d ToolCallData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				continue
+			}
+			// Track agent attribution (ARD-0035): an empty d.Agent means the
+			// event predates v0.13.0 (the field was added then) — exclude
+			// from AgentsSeen rather than guess, so the description footer
+			// doesn't lie about who did what.
+			if d.Agent != "" && !seenAgents[d.Agent] {
+				seenAgents[d.Agent] = true
+				ctx.AgentsSeen = append(ctx.AgentsSeen, d.Agent)
+			}
+			// Decode args as a flat string→raw map and pick out path-shaped
+			// keys. Edit/Write/MultiEdit use "file_path"; some Bash/Read
+			// variants use "path". Anything else is ignored — extracting
+			// touched files from `Bash` (e.g. `sed -i ...`) is out of scope
+			// for v0 (would require shell-AST parsing).
+			var args map[string]json.RawMessage
+			if err := json.Unmarshal(d.Args, &args); err != nil {
+				continue
+			}
+			for _, key := range []string{"file_path", "path"} {
+				raw, ok := args[key]
+				if !ok {
+					continue
+				}
+				var p string
+				if err := json.Unmarshal(raw, &p); err != nil {
+					continue
+				}
+				if p == "" || seenFiles[p] {
+					continue
+				}
+				seenFiles[p] = true
+				ctx.Files = append(ctx.Files, p)
+			}
+		}
+	}
+	sort.Strings(ctx.AgentsSeen) // stable rendering: claude before codex, alphabetic.
+
+	// Title shaping: trim to 80 chars for PR-title compatibility. If no user
+	// prompts were captured, fall back to a count-based summary so the
+	// dialog never opens blank.
+	if ctx.Title == "" {
+		ctx.Title = fmt.Sprintf("boring-ui session (%d prompt(s), %d file(s))", len(ctx.Prompts), len(ctx.Files))
+	}
+	if len(ctx.Title) > 80 {
+		ctx.Title = ctx.Title[:77] + "..."
+	}
+	return ctx, nil
+}
+
 // SummarizeSinceLastSave returns a short, deterministic summary of events
 // since the last save_succeeded (or from the start of the thread if no save
 // ever happened). v0: a one-liner counting tool_calls + user messages and
 // echoing the most recent user_message text. Real summarization is a
 // post-MVP AI call; this is a stub so the save dialog has *something*.
+//
+// Retained as the title-only path for any caller that doesn't need the
+// fuller SaveContext shape; handleSavePreview itself switched to
+// ComputeSaveContext.
 func (t *Thread) SummarizeSinceLastSave() (string, error) {
 	all, err := t.ReadAll()
 	if err != nil {

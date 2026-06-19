@@ -242,6 +242,153 @@ func TestIndexPreviewURLEscaped(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// ARD-0035: multi-agent tab strip in the LEFT pane
+// ============================================================================
+
+// helper: build a server with the given TerminalTabs already populated.
+func newTestServerWithTabs(t *testing.T, tabs []TerminalTab) *httptest.Server {
+	t.Helper()
+	dir := t.TempDir()
+	th, err := NewThread(dir, "test")
+	if err != nil {
+		t.Fatalf("NewThread: %v", err)
+	}
+	b := NewBroadcaster()
+	s := NewServer("test", t.TempDir(), "", "", "mock", nil, b, th)
+	s.SaveCmd = nil
+	s.TerminalTabs = tabs
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(func() {
+		srv.Close()
+		b.Close()
+	})
+	return srv
+}
+
+func TestIndexTerminalSingleTabRendersSingleIframeNoTabStrip(t *testing.T) {
+	// One tab = back-compat single-iframe layout. No tab strip rendered.
+	srv := newTestServerWithTabs(t, []TerminalTab{
+		{Name: "claude", URL: "http://127.0.0.1:7681/"},
+	})
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(body, []byte(`id="terminal-iframe"`)) {
+		t.Errorf("single-tab path should render id=terminal-iframe; got %s", string(body[:min(400, len(body))]))
+	}
+	if !bytes.Contains(body, []byte(`src="http://127.0.0.1:7681/"`)) {
+		t.Errorf("single-tab iframe src missing; got %s", string(body[:min(400, len(body))]))
+	}
+	if bytes.Contains(body, []byte(`id="agent-tab-strip"`)) {
+		t.Errorf("tab strip should NOT render with only 1 tab; body: %s", string(body[:min(800, len(body))]))
+	}
+}
+
+func TestIndexTerminalMultiTabsRenderTabStrip(t *testing.T) {
+	// ≥2 tabs = tab strip + one iframe per agent (only first visible).
+	srv := newTestServerWithTabs(t, []TerminalTab{
+		{Name: "claude", URL: "http://127.0.0.1:7681/"},
+		{Name: "codex", URL: "http://127.0.0.1:8567/"},
+	})
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	mustContain := []string{
+		`id="agent-tab-strip"`,                             // tab strip container
+		`role="tablist"`,                                   // a11y
+		`data-agent="claude"`,                              // each tab is identified by agent name
+		`data-agent="codex"`,
+		`class="tab active"`,                               // first tab is initially active
+		`aria-selected="true"`,                             // ditto, a11y
+		`id="terminal-iframe-claude"`,                      // per-agent iframe ids
+		`id="terminal-iframe-codex"`,
+		`src="http://127.0.0.1:7681/"`,                     // claude iframe src
+		`src="http://127.0.0.1:8567/"`,                     // codex iframe src
+		`style="display:none"`,                             // non-first iframe hidden by default
+		`class="terminal-iframe-tab"`,                      // styling hook
+	}
+	for _, want := range mustContain {
+		if !bytes.Contains(body, []byte(want)) {
+			t.Errorf("multi-tab render missing %q in:\n%s", want, string(body[:min(1400, len(body))]))
+		}
+	}
+	// The legacy single-iframe id should NOT appear in multi-tab mode.
+	if bytes.Contains(body, []byte(`id="terminal-iframe"`)) {
+		t.Errorf("multi-tab render leaked legacy id=terminal-iframe (singular); body: %s",
+			string(body[:min(1400, len(body))]))
+	}
+}
+
+func TestIndexTerminalURLBackCompatPromotedToSingleTab(t *testing.T) {
+	// activeTerminalTabs auto-promotes a legacy s.TerminalURL into a single
+	// "default"-named tab when TerminalTabs is empty. Verifies the back-compat
+	// path that existing TerminalURL-using tests (and any v0.12.0 callers)
+	// continue to render correctly.
+	dir := t.TempDir()
+	th, err := NewThread(dir, "test")
+	if err != nil {
+		t.Fatalf("NewThread: %v", err)
+	}
+	b := NewBroadcaster()
+	t.Cleanup(b.Close)
+	s := NewServer("test", t.TempDir(), "", "http://127.0.0.1:7681/", "mock", nil, b, th)
+	s.SaveCmd = nil
+	// Note: TerminalTabs intentionally NOT set — exercises the activeTerminalTabs
+	// fallback path.
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if !bytes.Contains(body, []byte(`id="terminal-iframe"`)) {
+		t.Errorf("legacy TerminalURL back-compat lost: single-iframe id missing; body: %s",
+			string(body[:min(800, len(body))]))
+	}
+	if !bytes.Contains(body, []byte(`src="http://127.0.0.1:7681/"`)) {
+		t.Errorf("legacy TerminalURL back-compat lost: iframe src wrong; body: %s",
+			string(body[:min(800, len(body))]))
+	}
+	if bytes.Contains(body, []byte(`id="agent-tab-strip"`)) {
+		t.Errorf("tab strip leaked through in legacy TerminalURL path; body: %s",
+			string(body[:min(800, len(body))]))
+	}
+}
+
+func TestIndexNoTerminalRendersChatUI(t *testing.T) {
+	// 0 tabs + empty TerminalURL → fall through to the SSE chat UI in the
+	// left pane (composer + thread). This is the original v0 chat-UI behavior;
+	// the ARD-0035 changes must not regress it.
+	_, srv := newTestServer(t, false) // TerminalURL="" + TerminalTabs nil
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{`id="thread"`, `id="composer"`, `id="input"`} {
+		if !bytes.Contains(body, []byte(want)) {
+			t.Errorf("chat UI missing %q in:\n%s", want, string(body[:min(600, len(body))]))
+		}
+	}
+	if bytes.Contains(body, []byte(`id="agent-tab-strip"`)) || bytes.Contains(body, []byte(`id="terminal-iframe"`)) {
+		t.Errorf("terminal UI leaked through in chat-only mode; body: %s",
+			string(body[:min(800, len(body))]))
+	}
+}
+
 func TestAssetsServed(t *testing.T) {
 	_, srv := newTestServer(t, false)
 	for _, path := range []string{"/chat.css", "/chat.js"} {

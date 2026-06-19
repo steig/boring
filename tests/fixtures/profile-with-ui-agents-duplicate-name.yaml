@@ -1,0 +1,15 @@
+# Fixture: duplicate agent names — should fail validation per ARD-0035 §4
+# (names must be unique because lib/web_ui.sh allocates ttyd ports by
+# hashing "$slug:$agent_name"; duplicates would collide).
+profile_version: "1"
+name: ui-agents-dup-fixture
+preset: shopify
+services: []
+
+ui:
+  enabled: true
+  agents:
+    - name: claude
+      harness: claude
+    - name: claude
+      harness: codex

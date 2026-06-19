@@ -147,6 +147,75 @@ body {
   background: #000;
 }
 
+/* --- Multi-agent tab strip (ARD-0035) ---------------------------------------
+   Rendered when --terminal-urls has ≥2 entries. The tab strip sits above N
+   .terminal-iframe-tab iframes; only the active one has display!=none. chat.js
+   handles click→swap + localStorage persistence. */
+
+.tab-strip {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  /* Match the page header (.header at line 43): same elevated dark surface,
+     so the strip reads as a continuation of the chrome rather than as a
+     separate content region. */
+  background: var(--bg-elev);
+  padding: 0;
+}
+
+.tab-strip .tab {
+  appearance: none;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 2px solid transparent;
+  /* Inactive tab: same surface as the strip itself; dimmed text via opacity
+     (chat.css has no --text-muted variable — opacity is the project's idiom
+     for "this thing is secondary"). */
+  background: transparent;
+  color: var(--fg);
+  opacity: 0.6;
+  padding: 0.45rem 0.95rem;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: background-color 80ms ease-out, color 80ms ease-out, border-color 80ms ease-out, opacity 80ms ease-out;
+}
+
+.tab-strip .tab:hover {
+  background: var(--bg-card);
+  opacity: 1;
+}
+
+.tab-strip .tab.active {
+  /* Active tab: the iframe-content surface (.bg) so the tab visually "drops
+     into" the pane below; full opacity + lime underline (same accent the
+     pane-gutter focus state uses) + bold weight. */
+  background: var(--bg);
+  color: var(--fg);
+  opacity: 1;
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.tab-strip .tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Each agent's iframe fills the pane below the tab strip. Identical styling
+   to #terminal-iframe; only one of the N is visible at a time (chat.js
+   manages display via inline style). */
+.terminal-iframe-tab {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+}
+
 .thread {
   flex: 1 1 auto;
   overflow-y: auto;

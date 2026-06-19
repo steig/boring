@@ -1,6 +1,6 @@
 # boring
 
-> A CLI that turns any repo into a one-command, isolated dev environment where mixed teams — engineers, marketers, managers — use code as a thinking medium. Wireframes, mockups, prototypes, pitches, with Claude as the collaborator at the keyboard.
+> A CLI that wraps a repo in a devcontainer with egress allowlisting, a tamper-resistant audit log, and an in-repo `profile.yaml` that the agent inside the container can't modify. The goal: let an AI agent — or a non-engineer — work on real code with real-shape data without ever touching production.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -19,6 +19,26 @@ $ boring open .
 ==> Verifying setup completion marker
 [OK] Ready. Attach your editor, or:  devcontainer exec --workspace-folder . -- bash
 ```
+
+## Threat model
+
+| Actor | What they can do | What boring stops | What it doesn't |
+|---|---|---|---|
+| **In-container AI agent** | Read/write the repo, run shell, make outbound requests | Cannot modify `.boring/*`, the generated guardrails, audit shims, or `~/.claude/settings.json` (RO bind-mounts + Claude `deny:` rules); cannot reach hosts outside `egress.allow:` (iptables-in-container); every tool call hits a host-side FIFO it can't rewrite | Container escape via kernel CVE or a misconfigured Docker setup. If you need a hard isolation boundary, layer gVisor, Firecracker, or a VM under boring's container. |
+| **Non-engineer on the team** | Same shell access as the agent, plus the browser UI | Same controls as above; production credentials never reach the container (secrets are resolved in memory from URIs the user *already* has access to — boring stores none of its own) | A determined insider with their own laptop and prod credentials. boring is not a DLP. |
+| **Compromised dep inside the container** | Network egress, file writes, prompt-injection attempts at the agent | Allowlisted egress prevents exfil to unknown hosts; the audit log records every tool call so the blast radius is reviewable post-incident | A supply-chain attack that lands code on the user's *host* outside the container. That belongs to your laptop's threat model, not boring's. |
+
+In one sentence: **the actor boring constrains is benign-but-confused (a PM, an LLM, a marketer), not a sophisticated adversary attempting container escape.** Most controls — egress allowlist, RO-bind-mounted guardrails, tamper-resistant audit — make confused-actor mistakes visible and bounded; they are not designed to stop a competent attacker who already controls the container.
+
+## vs. adjacent tools
+
+|  | boring | devcontainers alone | Coder / Gitpod / Daytona | Nix flakes + direnv |
+|---|---|---|---|---|
+| Egress allowlist + observation-derived `--learn-mode` | ✓ | ✗ | ✗ | ✗ |
+| Tamper-resistant audit of every agent tool call | ✓ | ✗ | ✗ | ✗ |
+| Guardrails the in-container agent *can't disable* | ✓ | ✗ | ✗ | ✗ |
+
+boring isn't trying to replace any of these — it composes [`@devcontainers/cli`](https://github.com/devcontainers/cli) directly. The novelty is the layer on top: containment of an AI agent (or a non-engineer) operating inside the dev environment.
 
 ## Status — v0.6.0-dev
 

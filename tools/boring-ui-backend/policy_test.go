@@ -118,6 +118,140 @@ func TestParseAllowedPaths_FiltersEmpty(t *testing.T) {
 	}
 }
 
+// --- parseTerminalURLs (ARD-0035) ----------------------------------------
+
+func TestParseTerminalURLs_BothEmptyReturnsNilNoError(t *testing.T) {
+	got, err := parseTerminalURLs("", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("want nil slice for both-empty; got %v", got)
+	}
+}
+
+func TestParseTerminalURLs_SingularBackCompat(t *testing.T) {
+	// --terminal-url alone → single-tab list named "default".
+	got, err := parseTerminalURLs("", "http://127.0.0.1:7681/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []TerminalTab{{Name: "default", URL: "http://127.0.0.1:7681/"}}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("singular back-compat got %v want %v", got, want)
+	}
+}
+
+func TestParseTerminalURLs_PluralHappy(t *testing.T) {
+	got, err := parseTerminalURLs("claude=http://127.0.0.1:7681/,codex=http://127.0.0.1:8567/", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []TerminalTab{
+		{Name: "claude", URL: "http://127.0.0.1:7681/"},
+		{Name: "codex", URL: "http://127.0.0.1:8567/"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(got)=%d want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("tab[%d] got %v want %v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseTerminalURLs_TrimsWhitespace(t *testing.T) {
+	got, err := parseTerminalURLs("  claude = http://127.0.0.1:7681/ , codex= http://127.0.0.1:8567/ ", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "claude" || got[0].URL != "http://127.0.0.1:7681/" ||
+		got[1].Name != "codex" || got[1].URL != "http://127.0.0.1:8567/" {
+		t.Errorf("trim failed; got %v", got)
+	}
+}
+
+func TestParseTerminalURLs_RejectsDuplicateName(t *testing.T) {
+	_, err := parseTerminalURLs("claude=http://a/,claude=http://b/", "")
+	if err == nil {
+		t.Fatalf("expected error for duplicate name; got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate tab name") {
+		t.Errorf("error should mention duplicate; got %v", err)
+	}
+}
+
+func TestParseTerminalURLs_RejectsMalformedEntry(t *testing.T) {
+	cases := []struct {
+		in   string
+		hint string
+	}{
+		{"claude", "expected <name>=<url>"},                   // no '='
+		{"=http://a/", "expected <name>=<url>"},                // empty name
+		{"claude=", "expected <name>=<url>"},                   // empty URL
+		{"=", "expected <name>=<url>"},                         // both empty
+	}
+	for _, c := range cases {
+		_, err := parseTerminalURLs(c.in, "")
+		if err == nil {
+			t.Errorf("expected error for %q; got nil", c.in)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.hint) {
+			t.Errorf("error for %q should mention %q; got %v", c.in, c.hint, err)
+		}
+	}
+}
+
+func TestParseTerminalURLs_RejectsBadSlugShape(t *testing.T) {
+	cases := []string{
+		"Claude=http://a/",   // uppercase
+		"my_agent=http://a/", // underscore
+		"agent.1=http://a/",  // period
+		"agent 1=http://a/",  // space
+	}
+	for _, in := range cases {
+		_, err := parseTerminalURLs(in, "")
+		if err == nil {
+			t.Errorf("expected slug-shape error for %q; got nil", in)
+			continue
+		}
+		if !strings.Contains(err.Error(), "slug-shape") {
+			t.Errorf("error for %q should mention slug-shape; got %v", in, err)
+		}
+	}
+}
+
+func TestParseTerminalURLs_PluralAndSingularBothSetIsCallerError(t *testing.T) {
+	// parseTerminalURLs treats plural-takes-precedence; the "both set is an
+	// error" rule is enforced in main.go BEFORE calling this function (so
+	// users get the right diagnostic). Here we just verify the function
+	// itself doesn't crash on that input and uses the plural path.
+	got, err := parseTerminalURLs("a=http://x/", "http://y/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "a" || got[0].URL != "http://x/" {
+		t.Errorf("plural should win when both passed; got %v", got)
+	}
+}
+
+// --- isSlugShape ---------------------------------------------------------
+
+func TestIsSlugShape(t *testing.T) {
+	for _, ok := range []string{"a", "claude", "agent-1", "x9", "abc123"} {
+		if !isSlugShape(ok) {
+			t.Errorf("isSlugShape(%q) want true", ok)
+		}
+	}
+	for _, bad := range []string{"", "A", "Agent", "x_y", "x.y", "x y", "_x", " x"} {
+		if isSlugShape(bad) {
+			t.Errorf("isSlugShape(%q) want false", bad)
+		}
+	}
+}
+
 // --- enforceAllowlist (with real git) ------------------------------------
 
 // recordingEmitter captures emitted policy_blocked events for assertion. It's

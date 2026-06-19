@@ -102,6 +102,11 @@ type TurnCompleteData struct {
 type ToolCallData struct {
 	Tool string          `json:"tool"`
 	Args json.RawMessage `json:"args"`
+	// Agent is the harness that produced this tool call: "claude" | "codex"
+	// (ARD-0035). Empty for legacy events written before v0.13.0 — readers
+	// should treat empty as "unknown" rather than defaulting to claude, so
+	// SaveContext's agent-set rendering doesn't lie about the source.
+	Agent string `json:"agent,omitempty"`
 }
 
 type ToolResultData struct {

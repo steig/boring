@@ -1,0 +1,16 @@
+# Fixture: unsupported harness — should fail validation per ARD-0035 §6
+# (two-harness ceiling: harness ∈ {claude, codex}; gemini and others are
+# intentionally rejected at the schema layer to force a re-evaluation back
+# to ARD-0020's harness path rather than adding a third per-CLI adapter).
+profile_version: "1"
+name: ui-agents-bad-harness-fixture
+preset: shopify
+services: []
+
+ui:
+  enabled: true
+  agents:
+    - name: claude
+      harness: claude
+    - name: gemini
+      harness: gemini

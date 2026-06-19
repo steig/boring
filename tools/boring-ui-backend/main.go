@@ -43,13 +43,27 @@ func main() {
 		mock         = flag.Bool("mock", false, "deprecated alias for --provider=mock")
 		previewURL   = flag.String("preview-url", "", "absolute UPSTREAM URL to preview (per ARD-0022 §6); empty shows fallback message. The iframe does NOT load this directly — when --preview-port is set, a dedicated-origin reverse proxy on that port forwards to this URL and strips X-Frame-Options + CSP frame-ancestors per ARD-0033, so upstreams with iframe-hostile headers (Shopify, GitHub, most prod sites) render and their root-absolute asset URLs resolve.")
 		previewPort  = flag.Int("preview-port", 0, "host TCP port (bound on 127.0.0.1) for the dedicated-origin preview reverse proxy (ARD-0033). Required for the preview iframe to render; with --preview-url set but this unset, the UI shows the fallback message. 0 disables.")
-		terminalURL  = flag.String("terminal-url", "", "absolute URL the LEFT-pane terminal iframe loads (e.g. ttyd serving claude); empty renders the SSE chat UI instead")
+		terminalURL  = flag.String("terminal-url", "", "absolute URL the LEFT-pane terminal iframe loads (e.g. ttyd serving claude); empty renders the SSE chat UI instead. DEPRECATED in favor of --terminal-urls (ARD-0035); kept as a back-compat singular alias — when set with --terminal-urls empty, parsed as a one-tab list named 'default'. Setting both is an error.")
+		terminalURLs = flag.String("terminal-urls", "", "comma-separated <name>=<url> pairs, one per agent tab in the LEFT pane (ARD-0035). Examples: --terminal-urls claude=http://127.0.0.1:7681/ — single tab, equivalent to --terminal-url; --terminal-urls claude=http://127.0.0.1:7681/,codex=http://127.0.0.1:8567/ — two tabs, renders a tab strip. Names must be unique slug-shape; URLs are loaded as iframe srcs. Empty → falls back to --terminal-url, then to the SSE chat UI.")
 		allowedPaths = flag.String("allowed-paths", "", "comma-separated glob patterns relative to workdir; files modified by the AI outside these patterns are reverted via git after each turn. Empty disables enforcement.")
 	)
 	flag.Parse()
 
 	if *socketPath == "" || *slug == "" || *workdir == "" {
-		fmt.Fprintln(os.Stderr, "usage: boring-ui-backend --socket <path> --slug <name> --workdir <path> [--provider mock|claude] [--preview-url <url>] [--terminal-url <url>] [--allowed-paths <globs>]")
+		fmt.Fprintln(os.Stderr, "usage: boring-ui-backend --socket <path> --slug <name> --workdir <path> [--provider mock|claude] [--preview-url <url>] [--terminal-urls <name>=<url>,...] [--allowed-paths <globs>]")
+		os.Exit(2)
+	}
+
+	// ARD-0035 §1: --terminal-urls is the multi-agent shape; --terminal-url
+	// is the singular back-compat alias. They are mutually exclusive — setting
+	// both invites the question "which one wins" and there's no good answer.
+	if *terminalURL != "" && *terminalURLs != "" {
+		fmt.Fprintln(os.Stderr, "boring-ui-backend: --terminal-url and --terminal-urls are mutually exclusive (use --terminal-urls; --terminal-url is the singular back-compat alias)")
+		os.Exit(2)
+	}
+	parsedTabs, terr := parseTerminalURLs(*terminalURLs, *terminalURL)
+	if terr != nil {
+		fmt.Fprintf(os.Stderr, "boring-ui-backend: %v\n", terr)
 		os.Exit(2)
 	}
 
@@ -80,12 +94,12 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*socketPath, *slug, *workdir, *threadsDir, *previewURL, *previewPort, *terminalURL, *provider, parsedAllowed); err != nil {
+	if err := run(*socketPath, *slug, *workdir, *threadsDir, *previewURL, *previewPort, parsedTabs, *provider, parsedAllowed); err != nil {
 		log.Fatalf("boring-ui-backend: %v", err)
 	}
 }
 
-func run(socketPath, slug, workdir, threadsDir, previewURL string, previewPort int, terminalURL, provider string, allowedPaths []string) error {
+func run(socketPath, slug, workdir, threadsDir, previewURL string, previewPort int, terminalTabs []TerminalTab, provider string, allowedPaths []string) error {
 	// Set up the socket directory + remove any stale socket from a prior run.
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return fmt.Errorf("create socket dir: %w", err)
@@ -103,7 +117,12 @@ func run(socketPath, slug, workdir, threadsDir, previewURL string, previewPort i
 	b := NewBroadcaster()
 	defer b.Close()
 
-	srv := NewServer(slug, workdir, previewURL, terminalURL, provider, allowedPaths, b, thread)
+	// NewServer's terminalURL string arg is the v0.12.0 single-iframe shape;
+	// pass "" here and populate TerminalTabs (ARD-0035) directly. activeTerminalTabs
+	// resolves the legacy field for older callers, so this is the canonical path
+	// for any v0.13.0+ invocation.
+	srv := NewServer(slug, workdir, previewURL, "", provider, allowedPaths, b, thread)
+	srv.TerminalTabs = terminalTabs
 
 	// Dedicated-origin preview proxy (ARD-0033): when both an upstream URL and
 	// a port are configured, the right-pane iframe loads http://127.0.0.1:<port>/
