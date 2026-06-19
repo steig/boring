@@ -1,10 +1,14 @@
 # ARD-0035: Codex as a second agent tab in boring-ui — taking on the second per-CLI adapter as a bounded validation of ARD-0026's harness-agnostic abstraction
 
-- **Status:** Accepted
+- **Status:** Shelved (2026-06-19) — see note below
 - **Date:** 2026-05-27
 - **Deciders:** Tom (Claude facilitating)
 - **Amends:** [ARD-0029](ard-0029-claude-shell-out-as-v0-boring-ui-backend.md) — takes on the second per-CLI adapter that ARD-0029 §6 named as out of scope, with an explicit two-harness ceiling. ARD-0029's path back to [ARD-0020](ard-0020-opencode-as-boring-ui-agent-harness.md) (OpenCode harness when subscription support catches up) still stands as the v1.x+ target.
 - **Related:** [[ard-0019-boring-ui-non-engineer-browser-surface]], [[ard-0020-opencode-as-boring-ui-agent-harness]], [[ard-0022-boring-ui-session-and-trust-model]], [[ard-0026-harness-agnostic-guardrails-and-path-allowlist]], [[ard-0027-opencode-audit-emit-path]], [[ard-0029-claude-shell-out-as-v0-boring-ui-backend]], [[ard-0033-preview-iframe-on-dedicated-origin]]
+
+> **Shelved 2026-06-19 — not pursued; superseded in practice by [ARD-0041](ard-0041-multi-agent-cockpit-on-web-substrate.md).** This ARD and its implementation (~1.8k lines: `ui.agents:` profile schema, `--terminal-urls` multi-tab backend, per-agent thread routing) were authored against base `27ac8c1` (pre-v0.12.1) but never merged. While the work sat uncommitted, the boring-ui surface evolved along a different axis: ARD-0041's multi-agent *cockpit* (N agents across N worktree-sandboxes, shipped in #34/#36) took the same left-pane real estate this ARD targeted. The two-harness "Claude + Codex tabs" model here is a coherent but leapfrogged direction — integrating it now would mean a 22-commit rebase against the cockpit work for a feature there is no longer concrete pull for (the dogfood "try it against Codex?" demand can be revisited inside the cockpit frame instead).
+>
+> **The work is preserved, not deleted:** branch `feat/ard-0035-codex-second-agent-tab` and the annotated tag `shelved/ard-0035` (commit `044451d`). Revive only if a concrete want for an in-boring-ui Codex tab re-emerges; reassess against the cockpit architecture first rather than rebasing this as-is.
 
 ## Context
 
