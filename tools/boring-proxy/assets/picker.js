@@ -244,11 +244,19 @@
 
   function renderCard(project) {
     const last = relTime(project.last_active);
+    // Real anchor (not a div) so the card is keyboard-focusable and a
+    // cmd/ctrl/middle-click still opens the project's route in a new browser
+    // tab. A plain left-click is intercepted to open an in-cockpit tab instead.
     return el(
-      "div",
+      "a",
       {
         class: "card status-" + statusOf(project.status),
-        onclick: () => openTab(project.slug, project.name),
+        href: project.url || "/" + project.slug + "/",
+        onclick: (e) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+          e.preventDefault();
+          openTab(project.slug, project.name);
+        },
       },
       el("div", { class: "card-top" },
         el("div", { class: "name" }, project.name || project.slug),
