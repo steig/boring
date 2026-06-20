@@ -429,14 +429,15 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 // successful save so the v0 UI flow works end-to-end before lib/saver.sh
 // (the other agent's work) lands.
 func (s *Server) runSave(req saveReq) {
-	// Locate the save binary. If absent, fake it (v0 prototype affordance).
+	// Locate the save binary. If absent, fail honestly — do NOT fake a
+	// successful save with a bogus PR link. The host CLI still works.
 	if len(s.SaveCmd) == 0 {
-		s.fakeSaveSucceeded(req)
+		s.emitSaveFailed("Saving from the cockpit isn't wired up in this build yet. Run `boring save` in your terminal to open a pull request for this work.", false)
 		return
 	}
 	if _, err := exec.LookPath(s.SaveCmd[0]); err != nil {
-		log.Printf("save: %s not on PATH, faking success: %v", s.SaveCmd[0], err)
-		s.fakeSaveSucceeded(req)
+		log.Printf("save: %s not on PATH: %v", s.SaveCmd[0], err)
+		s.emitSaveFailed(fmt.Sprintf("Save command %q isn't available. Run `boring save` in your terminal instead.", s.SaveCmd[0]), false)
 		return
 	}
 
@@ -465,20 +466,15 @@ func (s *Server) runSave(req saveReq) {
 	// Parse PR URL out of stdout. v0: naive scan for "https://github.com/".
 	prURL, branch := parseSaveOutput(string(out))
 	if prURL == "" {
-		prURL = "https://example.invalid/pr/0" // placeholder when parsing fails
+		// The save command ran but we couldn't find a PR URL in its output.
+		// Report that honestly rather than inventing a link.
+		s.emitSaveFailed("Save ran but no pull-request URL was found in its output. Check the `boring save` output in your terminal.", false)
+		return
 	}
 	if branch == "" {
 		branch = "marketer/" + s.Slug + "-" + time.Now().UTC().Format("20060102-150405")
 	}
 	s.emitSaveSucceeded(prURL, branch)
-}
-
-// fakeSaveSucceeded emits a synthetic save_succeeded event with a placeholder
-// PR URL. Used when the save binary isn't installed (v0 dev affordance).
-func (s *Server) fakeSaveSucceeded(req saveReq) {
-	branch := "marketer/" + s.Slug + "-" + time.Now().UTC().Format("20060102-150405")
-	_ = req
-	s.emitSaveSucceeded("https://example.invalid/pr/42", branch)
 }
 
 func (s *Server) emitSaveSucceeded(prURL, branch string) {
