@@ -4,6 +4,18 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-06-19
+
+### Added
+
+- **boring-ui "mission control" cockpit (ARD-0041).** The browser surface grows from one-project-at-a-time into a multi-project cockpit: a live **dashboard** of project cards (status resolved from socket reachability, last-activity, running/total counts) (#34), and a **tab bar** that opens several projects at once in same-origin iframes — switch/close, a "+" to add a registered project on the fly, and open tabs persist across refresh via localStorage (#36).
+- **Egress internal-network blocks — `cross_sandbox` + RFC1918 (ARD-0036).** In `enforce`/`learn` modes the container's own docker subnet and the private ranges (`10/8`, `172.16/12`, `192.168/16`) are dropped, so a compromised agent can't reach sibling sandboxes or the host LAN. The DNS resolver and the profile's declared sidecars (`services[].name`, resolved at boot) are carved out first so `dev → postgres/redis` keeps working; **fails open** (skips the blocks) if a sidecar won't resolve rather than severing it. Container-verified with a real postgres sidecar. (#33)
+
+### Docs / Decisions
+
+- README refreshed to the current surface + a de-rotting curated ARD index (#35).
+- **ARD-0043** — "multiple chat threads + `/resume`" resolved (via `/grill-me`) to **parallel worktree workspaces**, the deep end of the ARD-0041 cockpit (workspace = worktree + branch + full sandbox, registered as a Project, reusing the dashboard/tabs). Designed and **deferred pending validation** of the single-workspace cockpit; the single continuous thread stays the non-engineer default (#37).
+
 ## [0.14.0] — 2026-06-18
 
 ### Added
