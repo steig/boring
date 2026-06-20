@@ -20,7 +20,7 @@ $ boring open .
 [OK] Ready. Attach your editor, or:  devcontainer exec --workspace-folder . -- bash
 ```
 
-## Status — v0.14.0
+## Status — v0.15.0
 
 [ARD-0008](docs/ards/ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md)'s sandbox core (v0.3–v0.6) ships end-to-end, and on top of it the **boring-ui browser surface** plus a run of security hardening (egress floor, trust-anchor enforcement, audit attribution). v1.0 polish — brew/winget packaging, broader external dogfood — is the gap to a tagged release.
 
@@ -37,7 +37,7 @@ $ boring open .
 
 ### The boring-ui surface (browser)
 
-- **`boring open --ui` + `boring proxy`** — a host proxy (`boring.local`, mkcert TLS, per-user token) serves a browser chat and a **multi-project "mission control" dashboard** into each project's sandbox, so a non-engineer gets a URL with no terminal (ARD-0019/0021/0022). Live previews, diff cards, per-action undo, and an embedded in-container terminal.
+- **`boring open --ui` + `boring proxy`** — a host proxy (`boring.local`, mkcert TLS, per-user token) serves a browser chat and a **multi-project "mission control" dashboard** with a **tab bar** (open several projects at once, add on the fly) into each project's sandbox, so a non-engineer gets a URL with no terminal (ARD-0019/0021/0022/0041). Live previews, diff cards, an embedded in-container terminal, and per-project chat history that hydrates on reopen.
 
 ### Commands
 

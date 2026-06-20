@@ -389,6 +389,8 @@ The right way to author this list: run `boring open --learn-mode` once, exercise
 
 **Always-on floor (ARD-0036).** Beneath the allowlist, cloud-metadata (`169.254.169.254`, ECS `169.254.170.2`, EC2 IMDSv6) and link-local (`169.254.0.0/16`, `fe80::/10`) are dropped **unconditionally, in every mode** — the #1 SSRF / credential-theft target a prompt-injected agent would reach for. The DNS resolver is carved out so name resolution still works.
 
+**Internal-network blocks (`cross_sandbox` + RFC1918).** In `enforce`/`learn` modes the container's own docker subnet and the private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) are dropped too — so a compromised agent can't reach sibling sandboxes or the host LAN. The DNS resolver and the profile's declared **sidecars** (`services[].name`, resolved at boot) are carved out first, so `dev → postgres/redis` keeps working. If a sidecar name can't be resolved the blocks are skipped for that run (fail-open) rather than risk severing a sidecar.
+
 **`boring open --unsafe-network`.** Relaxes egress to default-ACCEPT — the allowlist is **not** enforced, only the metadata/link-local floor still blocks. Mutually exclusive with `--learn-mode`. Use only when you accept the exposure (e.g. a throwaway repo); the warning is loud and intentional.
 
 ---
