@@ -33,7 +33,7 @@ func newTestServerProvider(t *testing.T, provider string) (*Server, *httptest.Se
 	}
 	b := NewBroadcaster()
 	s := NewServer("test", t.TempDir(), "", "", provider, nil, b, th)
-	// Disable save shell-out for tests; the runSave fakeSaveSucceeded path is
+	// No save command in tests; the unwired path (honest save_failed) is
 	// exercised separately.
 	s.SaveCmd = nil
 	srv := httptest.NewServer(s.Handler())
@@ -502,9 +502,10 @@ func TestSavePreviewReturnsTitle(t *testing.T) {
 	}
 }
 
-// TestSaveFakeFlow: with SaveCmd disabled, POST /api/save should still
-// produce save_started + save_succeeded events on the SSE stream.
-func TestSaveFakeFlow(t *testing.T) {
+// TestSaveUnwiredFailsHonestly: with no SaveCmd, POST /api/save must emit
+// save_started + save_failed with an actionable message — NOT a faked
+// save_succeeded with a bogus PR link.
+func TestSaveUnwiredFailsHonestly(t *testing.T) {
 	s, srv := newTestServer(t, false)
 
 	sub := s.Broadcaster.Subscribe()
@@ -520,20 +521,20 @@ func TestSaveFakeFlow(t *testing.T) {
 	defer cancel()
 	events := Drain(ctx, sub, 2, 2*time.Second)
 	if len(events) < 2 {
-		t.Fatalf("got %d events, want 2 (started + succeeded)", len(events))
+		t.Fatalf("got %d events, want 2 (started + failed)", len(events))
 	}
 	if events[0].Type != EventSaveStarted {
 		t.Errorf("event 0: %s want %s", events[0].Type, EventSaveStarted)
 	}
-	if events[1].Type != EventSaveSucceeded {
-		t.Errorf("event 1: %s want %s", events[1].Type, EventSaveSucceeded)
+	if events[1].Type != EventSaveFailed {
+		t.Fatalf("event 1: %s want %s (must not fake success)", events[1].Type, EventSaveFailed)
 	}
-	var d SaveSucceededData
+	var d SaveFailedData
 	if err := json.Unmarshal(events[1].Data, &d); err != nil {
-		t.Errorf("save_succeeded data: %v", err)
+		t.Errorf("save_failed data: %v", err)
 	}
-	if d.PRURL == "" || d.BranchName == "" {
-		t.Errorf("save_succeeded missing fields: %+v", d)
+	if d.Error == "" || !strings.Contains(d.Error, "boring save") {
+		t.Errorf("save_failed should point at `boring save`: %+v", d)
 	}
 }
 
