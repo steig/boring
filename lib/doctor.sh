@@ -113,6 +113,20 @@ doctor_run() {
     log_info "  None present. Install on-demand when a profile needs one."
   fi
 
+  log_step "In-container git auth (ARD-0044)"
+  if [[ -n "${BORING_NO_GIT_AUTH:-}" ]]; then
+    log_info "  Disabled globally (BORING_NO_GIT_AUTH is set)."
+  elif [[ -n "${BORING_GIT_TOKEN:-}" ]]; then
+    log_success "  Token source: BORING_GIT_TOKEN env — injected into github.com containers (repos can opt out with git_auth: false)."
+  elif _tok="$(secret_resolve keychain:boring-github/github.com 2>/dev/null)" && [[ -n "$_tok" ]]; then
+    log_success "  Token source: keychain boring-github/github.com (scoped override)."
+  elif command -v gh >/dev/null 2>&1 && gh auth token >/dev/null 2>&1; then
+    log_success "  Token source: host 'gh auth token' — injected into github.com containers (repos can opt out with git_auth: false)."
+  else
+    log_info "  No token — in-container push OFF (host-side 'boring save' still works). 'gh auth login' to enable."
+  fi
+  unset _tok
+
   log_step "Repo-side safety nets (ARD-0016)"
   # boring assumes the default branch is protected so the in-container agent can
   # propose but not push. We only REPORT — boring never enables protection

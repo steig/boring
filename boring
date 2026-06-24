@@ -42,6 +42,7 @@ source "$LIB_DIR/profile.sh"
 source "$LIB_DIR/compose.sh"
 source "$LIB_DIR/guardrails.sh"
 source "$LIB_DIR/egress.sh"
+source "$LIB_DIR/gitauth.sh"
 source "$LIB_DIR/doctor.sh"
 source "$LIB_DIR/audit.sh"
 source "$LIB_DIR/saver.sh"
@@ -151,6 +152,15 @@ cmd_open() {
   # don't end up baked into compose YAML on disk.
   BORING_REMOTE_ENV_ARGS+=(--remote-env "BORING_PROFILE_NAME=$name")
   BORING_REMOTE_ENV_ARGS+=(--remote-env "BORING_HOST_USER=${USER:-unknown}")
+
+  # ARD-0044: frictionless in-container GitHub auth. Pull the host gh token and
+  # inject GH_TOKEN + GIT_CONFIG_* (no disk) so `git push`/`gh` work inside the
+  # container; open github.com egress when enforced. Silent no-op without a host
+  # token or when disabled; never runs for --ui opens (handled in gitauth_inject).
+  if gitauth_inject "$profile_json" "$repo" "$ui_flag"; then
+    BORING_REMOTE_ENV_ARGS+=("${BORING_GITAUTH_ENV_ARGS[@]}")
+    egress_enabled "$profile_json" && profile_json="$(gitauth_augment_egress "$profile_json")"
+  fi
 
   # Start the audit collector BEFORE compose generation so its FIFO is in place
   # by the time docker bind-mounts it into the container. compose.sh references
@@ -758,6 +768,14 @@ cmd_run() {
   # the array length by 2 for the user-visible count.
   log_success "Secrets resolved: $(( ${#_CMD_RUN_REMOTE_ENV_ARGS[@]} / 2 )) entries (--remote-env pairs prepared)"
 
+  # ARD-0044: same in-container GitHub auth as cmd_open, for headless runs.
+  # Headless never starts the UI, so pass "off" (definitively not the marketer
+  # surface) rather than "" — which would let a ui.enabled profile suppress it.
+  if gitauth_inject "$profile_json" "$repo" "off"; then
+    _CMD_RUN_REMOTE_ENV_ARGS+=("${BORING_GITAUTH_ENV_ARGS[@]}")
+    egress_enabled "$profile_json" && profile_json="$(gitauth_augment_egress "$profile_json")"
+  fi
+
   local project_name
   project_name="$(_cmd_run_compose_project_name "$profile_name")"
   log_info "Compose project: $project_name"
@@ -1293,6 +1311,9 @@ USAGE
   boring secret {set|get|rm} <svc>/<acct>    Provision a secret in the OS keyring so
                                              secret://keychain:<svc>/<acct> resolves with
                                              zero per-use auth (ARD-0032). set reads stdin.
+  boring git-auth {status|login|logout}      In-container git push: auto-injects your host
+                                             gh token into every container (ARD-0044).
+                                             login/logout override with a scoped PAT (stdin).
   boring wip {start|commit|discard} <path>   WIP-branch lifecycle (ARD-0022 §3)
   boring save <path> [--message --draft ...] Promote WIP branch to PR (ARD-0022 §7)
   boring ui {status|stop|open} [<slug>]      Manage boring-ui processes (v0.8.0)
@@ -1324,6 +1345,68 @@ EOF
 }
 
 # ============================================================================
+# cmd_gitauth — in-container GitHub push auth: status + scoped-PAT override
+# (ARD-0044). The injection itself happens in cmd_open/cmd_run via lib/gitauth.sh;
+# this subcommand is for inspecting and narrowing it.
+# ============================================================================
+_cmd_gitauth_print_help() {
+  cat <<'EOF'
+boring git-auth — in-container GitHub push auth (ARD-0044)
+
+USAGE
+  boring git-auth status            Show the token source boring would inject
+  boring git-auth login             Override with a scoped PAT (read from stdin)
+  boring git-auth logout            Remove the override (fall back to host gh)
+
+By default boring injects your host `gh auth token` into every container so
+`git push`/`gh` work inside it. `login` stashes a narrower token in the OS
+keyring (keychain:boring-github/github.com) that takes precedence — use a
+fine-grained PAT if the host token is too broad. Disable per-repo with
+`git_auth: false` in .boring/profile.yaml, or globally with BORING_NO_GIT_AUTH=1.
+EOF
+}
+
+cmd_gitauth() {
+  local sub="${1:-status}"; shift || true
+  case "$sub" in
+    -h|--help) _cmd_gitauth_print_help ;;
+    login)
+      log_info "Reading a token from stdin (use a fine-grained PAT scoped to the repos you use boring with):"
+      secret_set "boring-github/github.com" ;;
+    logout)
+      secret_rm "boring-github/github.com" ;;
+    status)
+      [[ -n "${BORING_NO_GIT_AUTH:-}" ]] && { log_warn "git-auth: globally disabled (BORING_NO_GIT_AUTH is set)"; return 0; }
+      local src="none" tok=""
+      if [[ -n "${BORING_GIT_TOKEN:-}" ]]; then
+        src="BORING_GIT_TOKEN env"
+      elif tok="$(secret_resolve keychain:boring-github/github.com 2>/dev/null)" && [[ -n "$tok" ]]; then
+        src="keychain boring-github/github.com (scoped override)"
+      elif command -v gh >/dev/null 2>&1 && gh auth token >/dev/null 2>&1; then
+        src="gh auth token (host login)"
+      fi
+      if [[ "$src" == "none" ]]; then
+        log_warn "git-auth: no token available — in-container push is OFF (host-side 'boring save' still works)."
+        log_info "  Fix: run 'gh auth login' on the host, or 'boring git-auth login' with a PAT."
+        return 0
+      fi
+      log_success "git-auth: in-container push will use — $src"
+      if command -v gh >/dev/null 2>&1; then
+        local who; who="$(gh api user --jq .login 2>/dev/null || true)"
+        [[ -n "$who" ]] && log_info "  GitHub user (host gh): $who"
+      fi
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        if [[ "$(git remote get-url origin 2>/dev/null || true)" == *github.com* ]]; then
+          log_info "  This repo's origin is GitHub — git-auth activates here."
+        else
+          log_info "  This repo's origin is not GitHub — git-auth does NOT activate here."
+        fi
+      fi ;;
+    *) _cmd_gitauth_print_help; return 1 ;;
+  esac
+}
+
+# ============================================================================
 # Main dispatch
 # ============================================================================
 
@@ -1338,6 +1421,7 @@ main() {
     audit)              cmd_audit   "$@" ;;
     proxy)              cmd_proxy   "$@" ;;
     secret)             cmd_secret  "$@" ;;
+    git-auth)           cmd_gitauth "$@" ;;
     wip)                cmd_wip     "$@" ;;
     save)               cmd_save    "$@" ;;
     ui)                 cmd_ui      "$@" ;;
