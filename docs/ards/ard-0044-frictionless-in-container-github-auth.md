@@ -41,7 +41,14 @@ Configuring git through `GIT_CONFIG_*` env rather than a container script means 
 
 - **Positive:** in-container `git push` / `gh pr create` just work; agents stop handing pushes back to the host; zero per-repo or per-machine setup for the common case; nothing on disk.
 - **Negative / the trade-off:** this puts a push-capable GitHub token in every container, reachable by a prompt-injected agent, and opens `github.com` egress — a deliberate hole in the ARD-0005 starvation default. The blast radius is exactly the **token's own scope**. The host `gh` token is typically broad (`repo`, `workflow`, often `admin:org`), so the mitigation is procedural and surfaced everywhere: substitute a **fine-grained PAT** scoped to just the repos you use boring with via `boring git-auth login` (or `BORING_GIT_TOKEN`), which caps it to "can push to those repos." `boring git-auth status` and `boring doctor` both report the active source so the exposure is never silent.
-- **Neutral:** off for the marketer (`--ui`) surface by construction; per-repo and global opt-outs exist for anyone who wants the starved default back.
+- **Neutral:** off for the marketer UI surface (explicit `--ui` *and* profile `ui.enabled: true`); per-repo (`git_auth: false`, an overlay-protected field) and global (`BORING_NO_GIT_AUTH=1`) opt-outs exist for anyone who wants the starved default back.
+
+### Exposure surfaces (not "in-memory only")
+
+The "nothing on disk" framing is about boring's own files (compose YAML, devcontainer.json, audit logs) — verified: the token reaches none of them, and logs name only the source. Two channels still carry the token and are worth naming honestly:
+
+- **Host argv.** boring injects via the devcontainer CLI's `--remote-env KEY=VALUE`, so `GH_TOKEN=<token>` is visible in host process argv (`ps`, `/proc/<pid>/cmdline`) for the duration of `devcontainer up`. This is a pre-existing property of boring's secret channel (every `secret://` rides it the same way); ARD-0044 only changes that a token now rides it *by default* on github.com repos. A future env-file/stdin channel in the devcontainer CLI would close it for all secrets at once.
+- **Container lifecycle hooks.** `--remote-env` values are present in the env of `postCreateCommand` / `setup:` hooks, so a profile-authored hook that dumps its environment to a file would land `GH_TOKEN` on the container FS. That is a profile-author footgun (the profile is the trust anchor, ARD-0006), now reachable by default — call it out in profile authoring guidance.
 
 ## Alternatives considered
 

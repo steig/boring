@@ -769,7 +769,9 @@ cmd_run() {
   log_success "Secrets resolved: $(( ${#_CMD_RUN_REMOTE_ENV_ARGS[@]} / 2 )) entries (--remote-env pairs prepared)"
 
   # ARD-0044: same in-container GitHub auth as cmd_open, for headless runs.
-  if gitauth_inject "$profile_json" "$repo" ""; then
+  # Headless never starts the UI, so pass "off" (definitively not the marketer
+  # surface) rather than "" — which would let a ui.enabled profile suppress it.
+  if gitauth_inject "$profile_json" "$repo" "off"; then
     _CMD_RUN_REMOTE_ENV_ARGS+=("${BORING_GITAUTH_ENV_ARGS[@]}")
     egress_enabled "$profile_json" && profile_json="$(gitauth_augment_egress "$profile_json")"
   fi

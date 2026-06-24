@@ -39,20 +39,34 @@ gitauth_hosts() { printf 'github.com\napi.github.com\n'; }
 
 # gitauth_disabled <profile-json> <ui-flag>
 # 0 (disabled) when the global kill-switch is set, the profile opts out, or this
-# is a --ui (marketer) open. 1 otherwise.
+# is the marketer UI surface. 1 otherwise.
 gitauth_disabled() {
   local profile_json="$1" ui_flag="$2"
   [[ -n "${BORING_NO_GIT_AUTH:-}" ]] && return 0
-  [[ "$ui_flag" == "on" ]] && return 0
+  # Effective UI state, mirroring _cmd_open_maybe_start_ui's precedence: an
+  # explicit --ui, OR a profile that sets ui.enabled:true on a plain open, IS
+  # the marketer surface and must never get a push token. --no-ui ("off") and
+  # the headless path force it off. (Checking only ui_flag=="on" would miss the
+  # common profile-driven UI open.)
+  case "$ui_flag" in
+    on) return 0 ;;
+    off) : ;;
+    *) [[ "$(jq -r '.ui.enabled // false' <<<"$profile_json" 2>/dev/null)" == "true" ]] && return 0 ;;
+  esac
   # Read .git_auth directly: jq's `// empty` would treat the boolean false as
   # empty and silently never disable.
   [[ "$(jq -r '.git_auth' <<<"$profile_json" 2>/dev/null)" == "false" ]] && return 0
   return 1
 }
 
-# gitauth_origin_is_github <repo> — true when origin is a github.com remote.
+# gitauth_origin_is_github <repo> — true only when origin's HOST is github.com.
+# Anchored on the real remote forms (not a bare *github.com* substring) so a
+# crafted origin like https://github.com.evil.tld/x does not activate git-auth.
 gitauth_origin_is_github() {
-  [[ "$(git -C "$1" remote get-url origin 2>/dev/null || true)" == *github.com* ]]
+  case "$(git -C "$1" remote get-url origin 2>/dev/null || true)" in
+    git@github.com:*|ssh://git@github.com/*|https://github.com/*|git://github.com/*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # gitauth_resolve_token <repo> — echo a GitHub token, or nothing.
@@ -87,9 +101,12 @@ gitauth_build_remote_env() {
   keys+=("url.https://github.com/.insteadOf");      vals+=("ssh://git@github.com/")
   keys+=("credential.https://github.com.helper")
   vals+=('!f() { test "$1" = get && printf "username=x-access-token\npassword=%s\n" "$GH_TOKEN"; }; f')
+  # Strip CR/LF defensively: a newline in a forwarded identity can't inject a
+  # config directive in the GIT_CONFIG_* env form, but it would still malform the
+  # --remote-env arg, so drop it.
   local hn he
-  hn="$(git -C "$repo" config --get user.name 2>/dev/null || true)"
-  he="$(git -C "$repo" config --get user.email 2>/dev/null || true)"
+  hn="$(git -C "$repo" config --get user.name  2>/dev/null | tr -d '\r\n' || true)"
+  he="$(git -C "$repo" config --get user.email 2>/dev/null | tr -d '\r\n' || true)"
   [[ -n "$hn" ]] && { keys+=("user.name");  vals+=("$hn"); }
   [[ -n "$he" ]] && { keys+=("user.email"); vals+=("$he"); }
 

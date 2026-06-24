@@ -112,6 +112,24 @@ gitauth_inject "$PROFILE" "$GH_REPO" "on" \
   && fail "inject: --ui should disable" \
   || pass "inject: --ui (marketer) open disables"
 
+# 7b. Profile-driven UI (ui.enabled:true) on a plain open is also the marketer
+# surface — must NOT get a token (regression: gate previously only saw --ui).
+gitauth_inject "$(jq '.ui.enabled=true' <<<"$PROFILE")" "$GH_REPO" "" \
+  && fail "inject: ui.enabled:true profile should disable on plain open" \
+  || pass "inject: profile ui.enabled:true disables on plain open"
+
+# 7c. ...but a headless/--no-ui caller ("off") with the same profile still pushes.
+gitauth_inject "$(jq '.ui.enabled=true' <<<"$PROFILE")" "$GH_REPO" "off" \
+  && pass "inject: ui.enabled:true + off (headless/--no-ui) stays active" \
+  || fail "inject: ui.enabled:true + off (headless/--no-ui) stays active"
+
+# 7d. Crafted look-alike origin host must not activate git-auth.
+EVIL_REPO="$(mkrepo 'https://github.com.evil.tld/x.git')"
+gitauth_inject "$PROFILE" "$EVIL_REPO" "" \
+  && fail "inject: github.com.evil.tld should be a no-op" \
+  || pass "inject: look-alike origin host is a no-op"
+rm -rf "$EVIL_REPO"
+
 # 8. Egress augmentation appends both hosts, dedupes, preserves existing.
 out="$(gitauth_augment_egress "$PROFILE" | jq -c '.egress.allow')"
 [[ "$out" == '["host.docker.internal","github.com","api.github.com"]' ]] \

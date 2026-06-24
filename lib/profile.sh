@@ -73,7 +73,7 @@ _profile_strip_overlay_fields() {
   # so dropping the parent covers them. `theme` is the deprecated alias for the
   # denied `preset` (ARD-0007), denied here so it can't sneak past the rewrite.
   for k in egress guardrails allowed_paths disallowed_paths data_sensitivity \
-           save restore claude name preset theme profile_version; do
+           save restore claude name preset theme profile_version git_auth; do
     if [[ "$(jq --arg k "$k" 'has($k)' <<<"$json")" == "true" ]]; then
       log_warn "$source: ignoring '$k:' — overlays cannot override security/identity fields (ARD-0040); set it in .boring/profile.yaml."
       json="$(jq --arg k "$k" 'del(.[$k])' <<<"$json")"
