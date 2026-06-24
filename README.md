@@ -20,7 +20,7 @@ $ boring open .
 [OK] Ready. Attach your editor, or:  devcontainer exec --workspace-folder . -- bash
 ```
 
-## Status — v0.15.0
+## Status — v0.16.0
 
 [ARD-0008](docs/ards/ard-0008-v03-to-v10-release-plan-and-thesis-evolution.md)'s sandbox core (v0.3–v0.6) ships end-to-end, and on top of it the **boring-ui browser surface** plus a run of security hardening (egress floor, trust-anchor enforcement, audit attribution). v1.0 polish — brew/winget packaging, broader external dogfood — is the gap to a tagged release.
 
@@ -45,6 +45,7 @@ $ boring open .
 - **`boring restore [<path>] [--refresh]`** — declarative `restore:` field pipes prod-shape data through `dbx restore --transform=<sanitizer> --into <sidecar>` (requires `dbx` ≥ 0.11.0).
 - **`boring audit security|prompts <profile> [--agent <name>]`** — read the JSONL audit logs.
 - **`boring doctor`** — pre-flights docker, devcontainer CLI, dbx (version-gated), jq, yq (mikefarah variant), optional secret-resolver CLIs, and repo-side safety nets — branch protection + PR templates (ARD-0016).
+- **`boring git-auth {status|login|logout}`** — in-container `git push`/`gh`. `boring open` auto-injects your host `gh` token into github.com sandboxes so an agent can push from inside (no ssh/dbus/keyring), configured via `GIT_CONFIG_*` env with the token off-disk; narrow it with a fine-grained PAT via `login`, or disable with `git_auth: false` / `BORING_NO_GIT_AUTH=1` (ARD-0044).
 
 What's deferred:
 

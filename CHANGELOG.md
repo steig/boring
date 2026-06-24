@@ -4,6 +4,16 @@ All notable changes to boring are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-06-23
+
+### Added
+
+- **Frictionless in-container GitHub auth (ARD-0044).** `boring open` / `boring run` auto-inject the host `gh auth token` into github.com sandboxes so `git push` / `gh` work *inside* the container — an agent no longer has to hand the push + PR back to a host shell. Git is configured via `GIT_CONFIG_*` env (no on-disk token): the SSH remote is rewritten to HTTPS plus a token-from-env credential helper, and the host git identity is forwarded — so it works with no `ssh` binary, dbus, or keyring in the container. `github.com` / `api.github.com` are opened in the egress allowlist when enforcing. Token precedence: `BORING_GIT_TOKEN` → keychain `boring-github/github.com` → `gh auth token`. Silent no-op without a token; **off for the marketer UI surface** (`--ui` or profile `ui.enabled`); disable per-repo with `git_auth: false` or globally with `BORING_NO_GIT_AUTH=1`. New `boring git-auth {status|login|logout}` and a `boring doctor` source check. (#40)
+
+### Security
+
+- The in-container token is a deliberate, bounded exception to the credential-starvation default (ARD-0005) — narrow it to a single repo with a fine-grained PAT via `boring git-auth login`. `git_auth` is an overlay-protected field (a gitignored/machine overlay can't re-enable a committed `git_auth: false`), and origin detection is host-anchored (no `*github.com*` substring, so look-alike hosts don't activate). The host-argv exposure of the `--remote-env` secret channel (pre-existing, affects every secret) is tracked for a channel-wide fix in #41.
+
 ## [0.15.0] — 2026-06-19
 
 ### Added
